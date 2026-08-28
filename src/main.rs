@@ -1,5 +1,7 @@
+mod agent;
 mod config;
 mod github;
+mod mcp;
 mod runtime;
 mod scheduler;
 mod store;
@@ -32,6 +34,26 @@ enum Cmd {
     Doctor,
     /// Write + bootstrap the launchd agent
     Install,
+    /// Recent jobs from the local journal
+    Jobs {
+        #[arg(long)]
+        json: bool,
+        /// Max jobs to show
+        #[arg(short = 'n', long, default_value = "20")]
+        limit: u32,
+    },
+    /// Captured step logs for a job (id, 'latest', or 'latest-failed')
+    Logs { job: Option<String> },
+    /// Failure digest for a job (default: most recent failed job)
+    Why {
+        job: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Open a shell inside a kept failed-job workspace
+    Exec { job: Option<String> },
+    /// Serve runner state as MCP tools over stdio
+    Mcp,
     /// One-time setup: write config, build the runner image, check access
     Init {
         /// Repo(s) to serve, e.g. --repo you/yourrepo (repeatable)
@@ -73,6 +95,43 @@ async fn main() -> Result<()> {
             &default_image(&cfg),
             cfg.repos.first().map(|rc| rc.runtime).unwrap_or(config::RuntimeKind::Docker),
         ),
+        Cmd::Jobs { json, limit } => {
+            let store = store::Store::open_readonly(&cfg.db_path())?;
+            let jobs = store.recent_jobs(limit);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&jobs)?);
+            } else {
+                print!("{}", agent::jobs_table(&jobs));
+            }
+            Ok(())
+        }
+        Cmd::Logs { job } => {
+            let store = store::Store::open_readonly(&cfg.db_path())?;
+            let job = agent::resolve_job(&store, job.as_deref(), false)?;
+            print!("{}", agent::read_worker_logs(&job)?);
+            Ok(())
+        }
+        Cmd::Why { job, json } => {
+            let store = store::Store::open_readonly(&cfg.db_path())?;
+            let digest = agent::why(&store, job.as_deref())?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&digest)?);
+            } else {
+                print!("{}", agent::why_text(&digest));
+            }
+            Ok(())
+        }
+        Cmd::Exec { job } => {
+            let store = store::Store::open_readonly(&cfg.db_path())?;
+            let job = agent::resolve_job(&store, job.as_deref(), true)?;
+            let image = job["kept_image"].as_str().context(
+                "no kept workspace for this job (only failed jobs are kept, per keep_failed_workspaces)",
+            )?;
+            use std::os::unix::process::CommandExt;
+            let err = StdCommand::new("docker").args(["run", "-it", "--rm", image]).exec();
+            anyhow::bail!("docker run failed: {err}")
+        }
+        Cmd::Mcp => mcp::serve(cfg).await,
         Cmd::Install | Cmd::Init { .. } => unreachable!(),
     }
 }

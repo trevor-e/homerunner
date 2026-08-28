@@ -43,6 +43,7 @@ struct SupervisorSection {
     dashboard_port: Option<u16>,
     max_total_runners: Option<u32>,
     data_dir: Option<String>,
+    keep_failed_workspaces: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -85,6 +86,8 @@ pub struct Config {
     pub dashboard_port: u16,
     pub max_total_runners: u32,
     pub data_dir: PathBuf,
+    /// How many failed-job workspaces to keep as post-mortem images (0 = off).
+    pub keep_failed_workspaces: u32,
     pub auth_source: String,
     pub repos: Vec<RepoConfig>,
 }
@@ -152,6 +155,7 @@ pub fn load(path: &Path) -> Result<Config> {
     Ok(Config {
         dashboard_port: raw.supervisor.dashboard_port.unwrap_or(8123),
         max_total_runners: raw.supervisor.max_total_runners.unwrap_or(4),
+        keep_failed_workspaces: raw.supervisor.keep_failed_workspaces.unwrap_or(2),
         data_dir,
         auth_source: raw.auth.source.unwrap_or_else(|| "gh".into()),
         repos,

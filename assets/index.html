@@ -134,7 +134,7 @@
   <section>
     <h2>Job history</h2>
     <div class="tablewrap"><table>
-      <thead><tr><th>Result</th><th>Repo</th><th>Workflow</th><th>Job</th><th>Took</th><th>When</th></tr></thead>
+      <thead><tr><th>Result</th><th>Repo</th><th>Workflow</th><th>Job</th><th>Took</th><th>When</th><th></th></tr></thead>
       <tbody id="jobs"></tbody>
     </table></div>
     <div class="empty" id="jobs-empty" hidden>No jobs yet — push something.</div>
@@ -211,6 +211,7 @@ async function refresh() {
       <td class="shrink">${j.html_url ? `<a href="${esc(j.html_url)}" target="_blank" rel="noopener">${esc(j.job_name)}</a>` : esc(j.job_name)}</td>
       <td class="dim num">${j.started_at && j.completed_at ? age(j.completed_at - j.started_at) : ""}</td>
       <td class="dim num">${j.completed_at ? age(now() - j.completed_at) + " ago" : (j.started_at ? "running" : "")}</td>
+      <td>${j.log_dir ? `<a href="/api/jobs/${j.gh_job_id}/logs" target="_blank" rel="noopener">logs</a>` : ""}${j.kept_image ? ` <span class="dim" title="homerunner exec ${j.gh_job_id}">· workspace kept</span>` : ""}</td>
     </tr>`).join("");
   $("jobs-empty").hidden = (d.jobs || []).some((j) => j.job_name);
 }

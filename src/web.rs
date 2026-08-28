@@ -22,7 +22,23 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/rate", get(rate))
         .route("/events", get(events))
         .route("/api/runners/{name}/logs", get(runner_logs))
+        .route("/api/jobs/{id}/logs", get(job_logs))
         .with_state(app)
+}
+
+async fn job_logs(State(app): State<Arc<App>>, Path(id): Path<i64>) -> axum::response::Response {
+    let job = app.store.lock().unwrap().job(id);
+    let Some(job) = job else {
+        return (axum::http::StatusCode::NOT_FOUND, format!("no job {id} recorded")).into_response();
+    };
+    match crate::agent::read_worker_logs(&job) {
+        Ok(text) => (
+            [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            text,
+        )
+            .into_response(),
+        Err(e) => (axum::http::StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    }
 }
 
 async fn index() -> Html<&'static str> {

@@ -55,6 +55,23 @@ impl Store {
         let db = Connection::open(path)?;
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.execute_batch(SCHEMA)?;
+        // Additive migrations; errors mean the column already exists.
+        for stmt in [
+            "ALTER TABLE jobs ADD COLUMN log_dir TEXT",
+            "ALTER TABLE jobs ADD COLUMN kept_image TEXT",
+        ] {
+            let _ = db.execute(stmt, []);
+        }
+        Ok(Self { db })
+    }
+
+    /// Open read-only for CLI commands, so they work (and can't corrupt
+    /// anything) while the supervisor owns the write side.
+    pub fn open_readonly(path: &Path) -> Result<Self> {
+        let db = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
         Ok(Self { db })
     }
 
@@ -106,6 +123,77 @@ impl Store {
         );
     }
 
+    pub fn set_job_artifacts(&self, gh_job_id: i64, log_dir: Option<&str>, kept_image: Option<&str>) {
+        let _ = self.db.execute(
+            "UPDATE jobs SET log_dir=COALESCE(?2, log_dir), kept_image=COALESCE(?3, kept_image)
+             WHERE gh_job_id=?1",
+            params![gh_job_id, log_dir, kept_image],
+        );
+    }
+
+    pub fn clear_kept_image(&self, gh_job_id: i64) {
+        let _ = self.db.execute(
+            "UPDATE jobs SET kept_image=NULL WHERE gh_job_id=?1",
+            params![gh_job_id],
+        );
+    }
+
+    /// Kept post-mortem images, oldest first (GC removes from the front).
+    pub fn kept_images(&self) -> Vec<(i64, String)> {
+        let Ok(mut stmt) = self.db.prepare(
+            "SELECT gh_job_id, kept_image FROM jobs WHERE kept_image IS NOT NULL
+             ORDER BY completed_at ASC",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        }) else {
+            return Vec::new();
+        };
+        rows.filter_map(|r| r.ok()).collect()
+    }
+
+    pub fn job(&self, gh_job_id: i64) -> Option<Value> {
+        self.job_where("gh_job_id = ?1", params![gh_job_id])
+    }
+
+    /// Most recent job; `failed_only` restricts to conclusion = failure.
+    pub fn latest_job(&self, failed_only: bool) -> Option<Value> {
+        if failed_only {
+            self.job_where("conclusion = 'failure'", params![])
+        } else {
+            self.job_where("1=1", params![])
+        }
+    }
+
+    fn job_where(&self, cond: &str, args: impl rusqlite::Params) -> Option<Value> {
+        let sql = format!(
+            "SELECT gh_job_id, repo, run_id, workflow, job_name, conclusion, runner_name,
+                    html_url, started_at, completed_at, log_dir, kept_image
+             FROM jobs WHERE {cond} ORDER BY COALESCE(completed_at, started_at) DESC LIMIT 1"
+        );
+        let mut stmt = self.db.prepare(&sql).ok()?;
+        stmt.query_row(args, |row| Ok(Self::job_row(row))).ok()
+    }
+
+    fn job_row(row: &rusqlite::Row<'_>) -> Value {
+        json!({
+            "gh_job_id": row.get::<_, Option<i64>>(0).ok().flatten(),
+            "repo": row.get::<_, Option<String>>(1).ok().flatten(),
+            "run_id": row.get::<_, Option<i64>>(2).ok().flatten(),
+            "workflow": row.get::<_, Option<String>>(3).ok().flatten(),
+            "job_name": row.get::<_, Option<String>>(4).ok().flatten(),
+            "conclusion": row.get::<_, Option<String>>(5).ok().flatten(),
+            "runner_name": row.get::<_, Option<String>>(6).ok().flatten(),
+            "html_url": row.get::<_, Option<String>>(7).ok().flatten(),
+            "started_at": row.get::<_, Option<f64>>(8).ok().flatten(),
+            "completed_at": row.get::<_, Option<f64>>(9).ok().flatten(),
+            "log_dir": row.get::<_, Option<String>>(10).ok().flatten(),
+            "kept_image": row.get::<_, Option<String>>(11).ok().flatten(),
+        })
+    }
+
     pub fn event(&self, level: &str, source: &str, msg: &str) {
         let _ = self.db.execute(
             "INSERT INTO events (ts, level, source, msg) VALUES (?1, ?2, ?3, ?4)",
@@ -116,23 +204,10 @@ impl Store {
     pub fn recent_jobs(&self, limit: u32) -> Vec<Value> {
         self.rows(
             "SELECT gh_job_id, repo, run_id, workflow, job_name, conclusion, runner_name,
-                    html_url, started_at, completed_at
+                    html_url, started_at, completed_at, log_dir, kept_image
              FROM jobs ORDER BY COALESCE(completed_at, started_at) DESC LIMIT ?1",
             limit,
-            |row| {
-                json!({
-                    "gh_job_id": row.get::<_, Option<i64>>(0).ok().flatten(),
-                    "repo": row.get::<_, Option<String>>(1).ok().flatten(),
-                    "run_id": row.get::<_, Option<i64>>(2).ok().flatten(),
-                    "workflow": row.get::<_, Option<String>>(3).ok().flatten(),
-                    "job_name": row.get::<_, Option<String>>(4).ok().flatten(),
-                    "conclusion": row.get::<_, Option<String>>(5).ok().flatten(),
-                    "runner_name": row.get::<_, Option<String>>(6).ok().flatten(),
-                    "html_url": row.get::<_, Option<String>>(7).ok().flatten(),
-                    "started_at": row.get::<_, Option<f64>>(8).ok().flatten(),
-                    "completed_at": row.get::<_, Option<f64>>(9).ok().flatten(),
-                })
-            },
+            Self::job_row,
         )
     }
 

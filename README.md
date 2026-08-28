@@ -52,6 +52,23 @@ Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 | `init` | one-time setup (config + image + doctor) |
 | `build-image` | rebuild the runner image from the embedded Dockerfile |
 
+## For agents
+
+CI state is local — captured at reap time, queryable without touching
+GitHub's API:
+
+| | |
+|---|---|
+| `jobs [--json]` | job history, with log/workspace availability |
+| `why [job] [--json]` | failure digest: what ran, log excerpt around the error |
+| `logs [job]` | full captured step logs (`latest`, `latest-failed`, or an id) |
+| `exec [job]` | shell inside a kept failed-job workspace |
+| `mcp` | same queries as MCP tools: `claude mcp add homerunner -- homerunner mcp` |
+
+Failed jobs keep their entire workspace (checkout, build state, tmpdirs) as
+a local image — `keep_failed_workspaces` sets how many, default 2 — so a
+failing test can be rerun in place instead of reasoned about from logs.
+
 ## Notes
 
 - `pool_size` is the per-repo concurrency cap; extra jobs queue on GitHub.

@@ -218,6 +218,36 @@ impl RuntimeKind {
         }
     }
 
+    /// Copy a path out of a (possibly exited) container to the host.
+    pub async fn copy_out(self, container_id: &str, src: &str, dest: &str) -> Result<()> {
+        // `container cp` is unverified on apple/container — see docs/arm64-verification.md.
+        run(&[self.cli(), "cp", &format!("{container_id}:{src}"), dest]).await?;
+        Ok(())
+    }
+
+    /// Freeze an exited container's filesystem (workspace included) as an
+    /// image for post-mortem `homerunner exec`.
+    pub async fn commit_image(self, container_id: &str, tag: &str) -> Result<()> {
+        match self {
+            RuntimeKind::Docker => {
+                run(&[
+                    "docker", "commit",
+                    "-c", "LABEL homerunner.kept=true",
+                    "-c", r#"ENTRYPOINT ["/bin/bash"]"#,
+                    container_id, tag,
+                ])
+                .await?;
+                Ok(())
+            }
+            // No commit equivalent confirmed for apple/container yet.
+            RuntimeKind::AppleContainer => bail!("kept workspaces not supported on apple-container yet"),
+        }
+    }
+
+    pub async fn remove_image(self, tag: &str) {
+        run_unchecked(&[self.cli(), "rmi", "-f", tag]).await;
+    }
+
     pub async fn kill(self, container_id: &str) {
         run_unchecked(&[self.cli(), "kill", container_id]).await;
     }

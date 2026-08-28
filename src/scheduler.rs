@@ -339,14 +339,80 @@ fn start_watchers(app: &Arc<App>, name: &str, kind: crate::config::RuntimeKind, 
 
 async fn watch_exit(app: Arc<App>, name: String, kind: crate::config::RuntimeKind, container_id: String) {
     let code = kind.wait(&container_id).await;
-    kind.remove(&container_id).await;
 
-    let (repo_cfg, ran_job) = {
-        let mut runners = app.runners.lock().unwrap();
-        let Some(info) = runners.get_mut(&name) else { return };
-        info.state = RunnerState::Exited;
-        (info.repo_cfg.clone(), info.ran_job)
+    // The conclusion arrives via the log watcher; give it a moment to land
+    // before deciding whether this workspace is worth keeping.
+    for _ in 0..6 {
+        let settled = app
+            .runners
+            .lock()
+            .unwrap()
+            .get(&name)
+            .map(|i| !i.ran_job || !i.job["conclusion"].is_null())
+            .unwrap_or(true);
+        if settled {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let Some(info) = app.runners.lock().unwrap().get(&name).cloned() else {
+        kind.remove(&container_id).await;
+        return;
     };
+    let (repo_cfg, ran_job) = (info.repo_cfg.clone(), info.ran_job);
+    let job_id = info.job["job_id"].as_i64();
+
+    // Post-mortem capture, before the container is destroyed: the runner's
+    // _diag logs (verbose per-step output) always; the whole workspace as a
+    // kept image when the job failed.
+    let mut log_dir: Option<String> = None;
+    let mut kept_image: Option<String> = None;
+    if ran_job {
+        let key = job_id.map(|i| i.to_string()).unwrap_or_else(|| name.clone());
+        let dir = app.config.data_dir.join("jobs").join(&key);
+        let _ = std::fs::create_dir_all(&dir);
+        let diag_dest = dir.join("diag");
+        if kind
+            .copy_out(&container_id, "/home/runner/_diag", &diag_dest.to_string_lossy())
+            .await
+            .is_ok()
+        {
+            log_dir = Some(dir.to_string_lossy().into_owned());
+        }
+        let meta = json!({
+            "job": info.job, "runner": name, "repo": repo_cfg.repo, "exit_code": code,
+        });
+        let _ = std::fs::write(dir.join("meta.json"), meta.to_string());
+
+        if info.job["conclusion"].as_str() == Some("failure") && app.config.keep_failed_workspaces > 0 {
+            let tag = format!("homerunner-kept:{key}");
+            match kind.commit_image(&container_id, &tag).await {
+                Ok(()) => {
+                    kept_image = Some(tag.clone());
+                    app.log("info", "keep", &format!("kept failed workspace as {tag} (homerunner exec {key})"));
+                }
+                Err(e) => app.log("warn", "keep", &format!("could not keep workspace for {name}: {e}")),
+            }
+        }
+    }
+    kind.remove(&container_id).await;
+    if let Some(id) = job_id {
+        let store = app.store.lock().unwrap();
+        store.set_job_artifacts(id, log_dir.as_deref(), kept_image.as_deref());
+        // The log-line handler can only persist the conclusion if enrichment
+        // had already resolved the job id by then; settle it here regardless.
+        if let Some(conclusion) = info.job["conclusion"].as_str() {
+            store.job_concluded(id, conclusion);
+        }
+    }
+    gc_kept_images(&app, kind).await;
+
+    {
+        let mut runners = app.runners.lock().unwrap();
+        if let Some(info) = runners.get_mut(&name) {
+            info.state = RunnerState::Exited;
+        }
+    }
     app.record_runner(&name, Some(now()), Some(code));
     app.runners.lock().unwrap().remove(&name);
 
@@ -456,6 +522,25 @@ async fn enrich_job(app: Arc<App>, name: String) {
             }
             Ok(None) => tokio::time::sleep(Duration::from_secs(8)).await,
         }
+    }
+}
+
+/// Drop the oldest kept post-mortem images beyond the configured budget.
+async fn gc_kept_images(app: &Arc<App>, kind: crate::config::RuntimeKind) {
+    let excess: Vec<(i64, String)> = {
+        let store = app.store.lock().unwrap();
+        let all = store.kept_images();
+        let budget = app.config.keep_failed_workspaces as usize;
+        if all.len() > budget {
+            all[..all.len() - budget].to_vec()
+        } else {
+            Vec::new()
+        }
+    };
+    for (job_id, tag) in excess {
+        kind.remove_image(&tag).await;
+        app.store.lock().unwrap().clear_kept_image(job_id);
+        app.log("info", "keep", &format!("gc'd kept workspace {tag}"));
     }
 }
 

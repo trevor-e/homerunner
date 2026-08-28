@@ -6,127 +6,218 @@
 <title>homerunner</title>
 <style>
   :root {
-    --bg: #f7f7f5; --panel: #ffffff; --ink: #1a1a1a; --muted: #6b6b6b;
-    --line: #e4e4e0; --accent: #2761E0; --ok: #1a7f37; --bad: #cf222e; --warn: #9a6700;
+    --bg: #f6f7f8; --panel: #ffffff; --ink: #17181a; --ink-2: #55585e; --ink-3: #8b8f96;
+    --line: #e3e5e8; --line-soft: #edeff1;
+    --accent: #2761E0;
+    --ok: #177a3d; --ok-bg: #e4f3ea;
+    --warn: #92610a; --warn-bg: #fbf0d7;
+    --bad: #c22a36; --bad-bg: #fbe6e8;
+    --idle: #55585e; --idle-bg: #eceef0;
+    --tail-bg: #17181a; --tail-ink: #b7bcc4;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #101012; --panel: #1a1a1e; --ink: #e8e8e6; --muted: #9a9a97;
-      --line: #2a2a2e; --ok: #3fb950; --bad: #f85149; --warn: #d29922;
+      --bg: #101114; --panel: #191b1f; --ink: #e8e9eb; --ink-2: #a2a6ad; --ink-3: #6d7178;
+      --line: #2a2d32; --line-soft: #222429;
+      --accent: #6b96ee;
+      --ok: #4cc477; --ok-bg: #17301f;
+      --warn: #ddab3b; --warn-bg: #322813;
+      --bad: #ee6b74; --bad-bg: #391b1e;
+      --idle: #a2a6ad; --idle-bg: #24262b;
+      --tail-bg: #0b0c0e; --tail-ink: #8b8f96;
     }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink);
-         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
-  header { display: flex; align-items: baseline; gap: 1rem; padding: 1rem 1.5rem;
-           border-bottom: 1px solid var(--line); }
-  header h1 { font-size: 1.05rem; margin: 0; }
-  header .meta { color: var(--muted); font-size: 0.85rem; }
-  main { max-width: 1080px; margin: 0 auto; padding: 1.25rem 1.5rem; display: grid; gap: 1.25rem; }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.25rem; }
-  h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em;
-       color: var(--muted); margin: 0 0 0.6rem; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    overflow-x: hidden;
+  }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .num  { font-variant-numeric: tabular-nums; }
+
+  header {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 12px 20px; background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 15px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+  header .logo { width: 10px; height: 10px; border-radius: 3px; background: var(--accent); }
+  #meta { color: var(--ink-3); font-size: 12.5px; margin-left: auto; }
+
+  #degraded {
+    display: none; padding: 8px 20px; font-size: 13px;
+    background: var(--bad-bg); color: var(--bad);
+    border-bottom: 1px solid var(--line);
+  }
+
+  main {
+    max-width: 1040px; margin: 0 auto; padding: 20px;
+    display: flex; flex-direction: column; gap: 20px; min-width: 0;
+  }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .tile {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; min-width: 0;
+  }
+  .tile .repo { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tile .fraction { font-size: 22px; font-weight: 650; margin-top: 2px; }
+  .tile .fraction small { font-size: 13px; font-weight: 500; color: var(--ink-3); }
+  .tile .sub { color: var(--ink-3); font-size: 12px; margin-top: 1px; }
+
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+  section > h2 {
+    font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em;
+    color: var(--ink-3); margin: 0; padding: 10px 14px 8px;
+  }
   .tablewrap { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; }
-  th, td { text-align: left; padding: 0.35rem 0.75rem 0.35rem 0; white-space: nowrap; }
-  th { color: var(--muted); font-weight: 500; font-size: 0.8rem; }
-  tr + tr td { border-top: 1px solid var(--line); }
-  .state { display: inline-block; padding: 0.05rem 0.5rem; border-radius: 999px; font-size: 0.78rem; }
-  .state.listening { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
-  .state.busy { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
-  .state.success { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
-  .state.failure { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
-  .degraded { color: var(--bad); font-size: 0.85rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th {
+    text-align: left; font-weight: 500; font-size: 11.5px; color: var(--ink-3);
+    padding: 4px 14px 6px; border-bottom: 1px solid var(--line-soft); white-space: nowrap;
+  }
+  td { padding: 7px 14px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; vertical-align: middle; }
+  tr:last-child td { border-bottom: 0; }
+  td.dim { color: var(--ink-2); }
+  td.shrink { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+  .empty { color: var(--ink-3); padding: 10px 14px 14px; font-size: 13px; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 9px 2px 7px; border-radius: 999px; font-size: 12px; font-weight: 550;
+    background: var(--pill-bg, var(--idle-bg)); color: var(--ink);
+  }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--pill-dot, var(--idle)); flex: none; }
+  .pill.listening { --pill-bg: var(--idle-bg); --pill-dot: var(--accent); }
+  .pill.busy      { --pill-bg: var(--warn-bg); --pill-dot: var(--warn); }
+  .pill.success   { --pill-bg: var(--ok-bg);   --pill-dot: var(--ok); }
+  .pill.failure   { --pill-bg: var(--bad-bg);  --pill-dot: var(--bad); }
+  .pill.cancelled { --pill-bg: var(--idle-bg); --pill-dot: var(--idle); }
+  .pill.busy::before { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  pre.tail { background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
-             padding: 0.6rem 0.8rem; overflow-x: auto; font-size: 0.78rem; color: var(--muted);
-             margin: 0.4rem 0 0; }
-  .muted { color: var(--muted); }
+
+  #tailbox { padding: 0 14px 12px; }
+  pre#tail {
+    margin: 0; padding: 10px 12px; border-radius: 8px;
+    background: var(--tail-bg); color: var(--tail-ink);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.55;
+    overflow-x: auto; max-height: 220px; overflow-y: auto;
+  }
 </style>
 </head>
 <body>
 <header>
+  <div class="logo"></div>
   <h1>homerunner</h1>
-  <span class="meta" id="meta">connecting…</span>
+  <span id="meta">connecting…</span>
 </header>
+<div id="degraded"></div>
 <main>
-  <section id="degraded-box" hidden><h2>Degraded</h2><div id="degraded" class="degraded"></div></section>
-  <section>
-    <h2>Pools</h2>
-    <div class="tablewrap"><table id="pools"><thead>
-      <tr><th>Repo</th><th>Runtime</th><th>Live / pool</th></tr>
-    </thead><tbody></tbody></table></div>
-  </section>
+  <div class="tiles" id="tiles"></div>
+
   <section>
     <h2>Runners</h2>
-    <div class="tablewrap"><table id="runners"><thead>
-      <tr><th>Name</th><th>Repo</th><th>State</th><th>Job</th><th>Up</th></tr>
-    </thead><tbody></tbody></table></div>
-    <pre class="tail" id="tail" hidden></pre>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Runner</th><th>Repo</th><th>State</th><th>Job</th><th>Up</th></tr></thead>
+      <tbody id="runners"></tbody>
+    </table></div>
+    <div class="empty" id="runners-empty" hidden>No live runners.</div>
+    <div id="tailbox" hidden><pre id="tail"></pre></div>
   </section>
+
   <section>
     <h2>Job history</h2>
-    <div class="tablewrap"><table id="jobs"><thead>
-      <tr><th>Repo</th><th>Workflow</th><th>Job</th><th>Result</th><th>Duration</th><th></th></tr>
-    </thead><tbody></tbody></table></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Result</th><th>Repo</th><th>Workflow</th><th>Job</th><th>Took</th><th>When</th></tr></thead>
+      <tbody id="jobs"></tbody>
+    </table></div>
+    <div class="empty" id="jobs-empty" hidden>No jobs yet — push something.</div>
   </section>
 </main>
 <script>
-const fmtAge = (ts) => {
-  if (!ts) return "";
-  const s = Math.max(0, (Date.now() / 1000) - ts);
-  if (s < 90) return Math.round(s) + "s";
-  if (s < 5400) return Math.round(s / 60) + "m";
-  return (s / 3600).toFixed(1) + "h";
-};
-const fmtDur = (a, b) => (a && b) ? fmtAge((Date.now() / 1000) - (b - a)) : "";
+const $ = (id) => document.getElementById(id);
 const esc = (t) => { const d = document.createElement("div"); d.textContent = t ?? ""; return d.innerHTML; };
+const now = () => Date.now() / 1000;
+
+function age(sec) {
+  if (sec == null || !isFinite(sec) || sec < 0) return "";
+  if (sec < 60) return Math.round(sec) + "s";
+  if (sec < 5400) return Math.round(sec / 60) + "m";
+  if (sec < 129600) return (sec / 3600).toFixed(1) + "h";
+  return Math.round(sec / 86400) + "d";
+}
+
+function pill(state) {
+  const label = { listening: "listening", busy: "running", success: "passed", failure: "failed", cancelled: "cancelled" }[state] || state;
+  return `<span class="pill ${esc(state)}">${esc(label)}</span>`;
+}
+
+function jobCell(job) {
+  const name = job?.job_name || "";
+  if (!name) return "";
+  const wf = job?.workflow && job.workflow !== name ? `<span class="dim">${esc(job.workflow)} / </span>` : "";
+  return job?.html_url
+    ? `${wf}<a href="${esc(job.html_url)}" target="_blank" rel="noopener">${esc(name)}</a>`
+    : `${wf}${esc(name)}`;
+}
 
 async function refresh() {
-  let data;
-  try {
-    data = await (await fetch("/api/state")).json();
-  } catch {
-    document.getElementById("meta").textContent = "supervisor unreachable";
-    return;
-  }
-  document.getElementById("meta").textContent =
-    data.repos.length + " repo(s) · " + data.runners.length + " live runner(s)";
+  let d;
+  try { d = await (await fetch("/api/state")).json(); }
+  catch { $("meta").textContent = "supervisor unreachable"; return; }
 
-  const degraded = Object.entries(data.degraded || {});
-  document.getElementById("degraded-box").hidden = degraded.length === 0;
-  document.getElementById("degraded").innerHTML =
-    degraded.map(([k, v]) => `<div><strong>${esc(k)}</strong>: ${esc(v)}</div>`).join("");
+  const busy = d.runners.filter((r) => r.state === "busy").length;
+  $("meta").textContent =
+    `${d.repos.length} repo${d.repos.length === 1 ? "" : "s"} · ${d.runners.length} runner${d.runners.length === 1 ? "" : "s"}` +
+    (busy ? ` · ${busy} running` : "");
 
-  document.querySelector("#pools tbody").innerHTML = data.repos.map((r) => `
-    <tr><td>${esc(r.repo)}</td><td class="muted">${esc(r.runtime)}</td>
-        <td>${r.live} / ${r.pool_size}</td></tr>`).join("");
+  const degraded = Object.entries(d.degraded || {});
+  $("degraded").style.display = degraded.length ? "block" : "none";
+  $("degraded").innerHTML = degraded.map(([k, v]) => `<strong>${esc(k)}</strong>: ${esc(v)}`).join(" · ");
 
-  document.querySelector("#runners tbody").innerHTML = data.runners.map((r) => `
-    <tr><td>${esc(r.name)}</td><td class="muted">${esc(r.repo)}</td>
-        <td><span class="state ${esc(r.state)}">${esc(r.state)}</span></td>
-        <td>${r.job?.html_url ? `<a href="${esc(r.job.html_url)}" target="_blank">${esc(r.job.job_name || "job")}</a>` : esc(r.job?.job_name || "")}</td>
-        <td class="muted">${fmtAge(r.created_at)}</td></tr>`).join("") ||
-    `<tr><td colspan="5" class="muted">no live runners</td></tr>`;
+  $("tiles").innerHTML = d.repos.map((r) => `
+    <div class="tile">
+      <div class="repo" title="${esc(r.repo)}">${esc(r.repo)}</div>
+      <div class="fraction num">${r.live}<small> / ${r.pool_size} runners</small></div>
+      <div class="sub">${esc(r.runtime)}</div>
+    </div>`).join("");
 
-  const tails = data.runners.flatMap((r) => r.log_tail.map((l) => r.name.split("-").pop() + " │ " + l));
-  const tailEl = document.getElementById("tail");
-  tailEl.hidden = tails.length === 0;
-  tailEl.textContent = tails.slice(-12).join("\n");
+  $("runners").innerHTML = d.runners.map((r) => `
+    <tr>
+      <td class="mono shrink" title="${esc(r.name)}">${esc(r.name.split("-").pop())}</td>
+      <td class="dim shrink">${esc(r.repo)}</td>
+      <td>${pill(r.state)}</td>
+      <td class="shrink">${jobCell(r.job)}</td>
+      <td class="dim num">${age(now() - r.created_at)}</td>
+    </tr>`).join("");
+  $("runners-empty").hidden = d.runners.length > 0;
 
-  document.querySelector("#jobs tbody").innerHTML = (data.jobs || []).map((j) => `
-    <tr><td class="muted">${esc(j.repo)}</td><td>${esc(j.workflow || "")}</td><td>${esc(j.job_name || "")}</td>
-        <td>${j.conclusion ? `<span class="state ${esc(j.conclusion)}">${esc(j.conclusion)}</span>` : ""}</td>
-        <td class="muted">${j.started_at && j.completed_at ? Math.round(j.completed_at - j.started_at) + "s" : ""}</td>
-        <td>${j.html_url ? `<a href="${esc(j.html_url)}" target="_blank">view</a>` : ""}</td></tr>`).join("") ||
-    `<tr><td colspan="6" class="muted">no jobs yet</td></tr>`;
+  const tails = d.runners.flatMap((r) =>
+    (r.log_tail || []).slice(-4).map((l) => r.name.split("-").pop() + " │ " + l));
+  $("tailbox").hidden = tails.length === 0;
+  $("tail").textContent = tails.join("\n");
+
+  $("jobs").innerHTML = (d.jobs || []).filter((j) => j.job_name).map((j) => `
+    <tr>
+      <td>${j.conclusion ? pill(j.conclusion) : pill("busy")}</td>
+      <td class="dim shrink">${esc(j.repo)}</td>
+      <td class="shrink">${esc(j.workflow || "")}</td>
+      <td class="shrink">${j.html_url ? `<a href="${esc(j.html_url)}" target="_blank" rel="noopener">${esc(j.job_name)}</a>` : esc(j.job_name)}</td>
+      <td class="dim num">${j.started_at && j.completed_at ? age(j.completed_at - j.started_at) : ""}</td>
+      <td class="dim num">${j.completed_at ? age(now() - j.completed_at) + " ago" : (j.started_at ? "running" : "")}</td>
+    </tr>`).join("");
+  $("jobs-empty").hidden = (d.jobs || []).some((j) => j.job_name);
 }
 
 refresh();
-setInterval(refresh, 30000); // safety net; SSE below is the real trigger
-const source = new EventSource("/events");
-source.onmessage = refresh;
+setInterval(refresh, 30000); // fallback; SSE below is the trigger
+new EventSource("/events").onmessage = refresh;
 </script>
 </body>
 </html>

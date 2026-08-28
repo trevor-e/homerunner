@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>homerunner</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --ink: #1a1a1a; --muted: #6b6b6b;
+    --line: #e4e4e0; --accent: #2761E0; --ok: #1a7f37; --bad: #cf222e; --warn: #9a6700;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101012; --panel: #1a1a1e; --ink: #e8e8e6; --muted: #9a9a97;
+      --line: #2a2a2e; --ok: #3fb950; --bad: #f85149; --warn: #d29922;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 1rem; padding: 1rem 1.5rem;
+           border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 1.05rem; margin: 0; }
+  header .meta { color: var(--muted); font-size: 0.85rem; }
+  main { max-width: 1080px; margin: 0 auto; padding: 1.25rem 1.5rem; display: grid; gap: 1.25rem; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.25rem; }
+  h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em;
+       color: var(--muted); margin: 0 0 0.6rem; }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 0.35rem 0.75rem 0.35rem 0; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 0.8rem; }
+  tr + tr td { border-top: 1px solid var(--line); }
+  .state { display: inline-block; padding: 0.05rem 0.5rem; border-radius: 999px; font-size: 0.78rem; }
+  .state.listening { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+  .state.busy { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  .state.success { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+  .state.failure { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
+  .degraded { color: var(--bad); font-size: 0.85rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  pre.tail { background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+             padding: 0.6rem 0.8rem; overflow-x: auto; font-size: 0.78rem; color: var(--muted);
+             margin: 0.4rem 0 0; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>homerunner</h1>
+  <span class="meta" id="meta">connecting…</span>
+</header>
+<main>
+  <section id="degraded-box" hidden><h2>Degraded</h2><div id="degraded" class="degraded"></div></section>
+  <section>
+    <h2>Pools</h2>
+    <div class="tablewrap"><table id="pools"><thead>
+      <tr><th>Repo</th><th>Runtime</th><th>Live / pool</th></tr>
+    </thead><tbody></tbody></table></div>
+  </section>
+  <section>
+    <h2>Runners</h2>
+    <div class="tablewrap"><table id="runners"><thead>
+      <tr><th>Name</th><th>Repo</th><th>State</th><th>Job</th><th>Up</th></tr>
+    </thead><tbody></tbody></table></div>
+    <pre class="tail" id="tail" hidden></pre>
+  </section>
+  <section>
+    <h2>Job history</h2>
+    <div class="tablewrap"><table id="jobs"><thead>
+      <tr><th>Repo</th><th>Workflow</th><th>Job</th><th>Result</th><th>Duration</th><th></th></tr>
+    </thead><tbody></tbody></table></div>
+  </section>
+</main>
+<script>
+const fmtAge = (ts) => {
+  if (!ts) return "";
+  const s = Math.max(0, (Date.now() / 1000) - ts);
+  if (s < 90) return Math.round(s) + "s";
+  if (s < 5400) return Math.round(s / 60) + "m";
+  return (s / 3600).toFixed(1) + "h";
+};
+const fmtDur = (a, b) => (a && b) ? fmtAge((Date.now() / 1000) - (b - a)) : "";
+const esc = (t) => { const d = document.createElement("div"); d.textContent = t ?? ""; return d.innerHTML; };
+
+async function refresh() {
+  let data;
+  try {
+    data = await (await fetch("/api/state")).json();
+  } catch {
+    document.getElementById("meta").textContent = "supervisor unreachable";
+    return;
+  }
+  document.getElementById("meta").textContent =
+    data.repos.length + " repo(s) · " + data.runners.length + " live runner(s)";
+
+  const degraded = Object.entries(data.degraded || {});
+  document.getElementById("degraded-box").hidden = degraded.length === 0;
+  document.getElementById("degraded").innerHTML =
+    degraded.map(([k, v]) => `<div><strong>${esc(k)}</strong>: ${esc(v)}</div>`).join("");
+
+  document.querySelector("#pools tbody").innerHTML = data.repos.map((r) => `
+    <tr><td>${esc(r.repo)}</td><td class="muted">${esc(r.runtime)}</td>
+        <td>${r.live} / ${r.pool_size}</td></tr>`).join("");
+
+  document.querySelector("#runners tbody").innerHTML = data.runners.map((r) => `
+    <tr><td>${esc(r.name)}</td><td class="muted">${esc(r.repo)}</td>
+        <td><span class="state ${esc(r.state)}">${esc(r.state)}</span></td>
+        <td>${r.job?.html_url ? `<a href="${esc(r.job.html_url)}" target="_blank">${esc(r.job.job_name || "job")}</a>` : esc(r.job?.job_name || "")}</td>
+        <td class="muted">${fmtAge(r.created_at)}</td></tr>`).join("") ||
+    `<tr><td colspan="5" class="muted">no live runners</td></tr>`;
+
+  const tails = data.runners.flatMap((r) => r.log_tail.map((l) => r.name.split("-").pop() + " │ " + l));
+  const tailEl = document.getElementById("tail");
+  tailEl.hidden = tails.length === 0;
+  tailEl.textContent = tails.slice(-12).join("\n");
+
+  document.querySelector("#jobs tbody").innerHTML = (data.jobs || []).map((j) => `
+    <tr><td class="muted">${esc(j.repo)}</td><td>${esc(j.workflow || "")}</td><td>${esc(j.job_name || "")}</td>
+        <td>${j.conclusion ? `<span class="state ${esc(j.conclusion)}">${esc(j.conclusion)}</span>` : ""}</td>
+        <td class="muted">${j.started_at && j.completed_at ? Math.round(j.completed_at - j.started_at) + "s" : ""}</td>
+        <td>${j.html_url ? `<a href="${esc(j.html_url)}" target="_blank">view</a>` : ""}</td></tr>`).join("") ||
+    `<tr><td colspan="6" class="muted">no jobs yet</td></tr>`;
+}
+
+refresh();
+setInterval(refresh, 30000); // safety net; SSE below is the real trigger
+const source = new EventSource("/events");
+source.onmessage = refresh;
+</script>
+</body>
+</html>

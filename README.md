@@ -17,6 +17,13 @@ GitHub-hosted runners.
 > [!WARNING]
 > Private repos only. On a public repo, fork PRs run arbitrary code on your
 > machine.
+>
+> The `docker` runtime is **not a security boundary**: runners are
+> `--privileged` (the inner dockerd requires it), and a privileged container
+> can escape to the host by design. Treat every job as if it runs directly on
+> your machine, and only point homerunner at code you'd run there yourself.
+> The per-job VMs of `apple-container` are the stronger story, but shared
+> caches and your local network are still exposed to whatever a job does.
 
 ## Setup
 

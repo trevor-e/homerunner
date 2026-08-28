@@ -14,11 +14,13 @@ job. A Docker driver provides the same behavior with `--privileged`
 containers; it's the fallback while the apple/container driver matures, and
 the only option on Intel Macs.
 
-Honest status: the Docker driver is what's battle-tested (it has run
-thousands of job-minutes of real CI, including Postgres `services:` blocks
-and Playwright browser jobs). The apple/container driver is written to the
-same interface but hasn't run yet — it needs an Apple Silicon machine, and
-running dockerd inside the VM may need Apple's minimal guest kernel rebuilt
+Status, plainly: this was built on an Intel Mac, so the Docker driver is
+what's battle-tested — thousands of job-minutes of real CI, including
+Postgres `services:` blocks and Playwright browser jobs. apple/container is
+Apple-Silicon-only, so that driver is written to the same interface but
+awaits its first run on arm64 hardware (see
+`docs/arm64-verification.md` for the checklist). The open question there is
+whether dockerd runs inside Apple's minimal guest kernel or needs it rebuilt
 with overlayfs/netfilter enabled (`container` accepts a custom kernel).
 
 Some mechanics worth knowing:

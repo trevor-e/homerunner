@@ -55,12 +55,20 @@ struct AuthSection {
     source: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+struct ToolchainsSection {
+    python: Option<String>,
+    node: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct RawConfig {
     #[serde(default)]
     supervisor: SupervisorSection,
     #[serde(default)]
     auth: AuthSection,
+    #[serde(default)]
+    toolchains: ToolchainsSection,
     #[serde(default)]
     defaults: RepoDefaults,
     #[serde(default)]
@@ -102,6 +110,8 @@ pub struct Config {
     /// Minutes an idle burst runner (beyond reserved) lives before decay.
     pub idle_decay_min: u64,
     pub auth_source: String,
+    pub python_version: String,
+    pub node_version: String,
     pub repos: Vec<RepoConfig>,
 }
 
@@ -192,6 +202,8 @@ pub fn load(path: &Path) -> Result<Config> {
         idle_decay_min: raw.supervisor.idle_decay_min.unwrap_or(10),
         data_dir,
         auth_source: raw.auth.source.unwrap_or_else(|| "gh".into()),
+        python_version: raw.toolchains.python.unwrap_or_else(|| "3.13.1".into()),
+        node_version: raw.toolchains.node.unwrap_or_else(|| "24.14.0".into()),
         repos,
     })
 }

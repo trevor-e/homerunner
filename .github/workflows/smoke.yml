@@ -16,6 +16,23 @@ jobs:
     runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v4
+      - name: Verify baked tool-cache markers
+        run: |
+          test -f "${AGENT_TOOLSDIRECTORY}/Python/3.13.1/x64.complete"
+          test -f "${AGENT_TOOLSDIRECTORY}/node/24.14.0/x64.complete"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.1'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+      - name: Verify baked tool cache
+        run: |
+          test "${pythonLocation#${AGENT_TOOLSDIRECTORY}/}" != "$pythonLocation"
+          node_path="$(readlink -f "$(command -v node)")"
+          test "${node_path#${AGENT_TOOLSDIRECTORY}/}" != "$node_path"
+          test "$(python --version)" = "Python 3.13.1"
+          test "$(node --version)" = "v24.14.0"
       - run: echo "hello from homerunner's own pool"
       - run: |
           echo "writing a breadcrumb into the workspace"

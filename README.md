@@ -52,6 +52,23 @@ nothing but Docker (or apple/container) and `gh`. `init` picks defaults by
 arch — `apple-container`/arm64 labels on Apple Silicon, `docker`/x64
 otherwise — and leaves an existing config alone.
 
+The runner image includes configurable Python and Node versions in the Actions
+tool cache, so `actions/setup-python` and `actions/setup-node` can select them
+without downloading a toolchain for every ephemeral job. Other versions remain
+installable in the job's private container layer. The defaults are Python
+3.13.1 and Node 24.14.0; change them in the config and run `homerunner
+build-image` to rebuild:
+
+```toml
+[toolchains]
+python = "3.13.1"
+node = "24.14.0"
+```
+
+The image also includes common `ubuntu-latest` utilities and native build
+prerequisites such as GitHub CLI, Git LFS, SSH, rsync, CMake, Ninja,
+`pkg-config`, OpenSSL headers, and compression tools.
+
 Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 
 ## Commands

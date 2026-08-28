@@ -113,6 +113,8 @@ async fn main() -> Result<()> {
                 .first()
                 .map(|rc| rc.runtime)
                 .unwrap_or(config::RuntimeKind::Docker),
+            &cfg.python_version,
+            &cfg.node_version,
         ),
         Cmd::Jobs { json, limit } => {
             let store = store::Store::open_readonly(&cfg.db_path())?;
@@ -240,7 +242,12 @@ fn image_exists(image: &str, runtime: config::RuntimeKind) -> bool {
 /// binary, so a fresh machine needs nothing but this executable and a
 /// container runtime. The builder CLI follows the runtime: `docker build`
 /// or apple/container's `container build`.
-fn build_image(image: &str, runtime: config::RuntimeKind) -> Result<()> {
+fn build_image(
+    image: &str,
+    runtime: config::RuntimeKind,
+    python_version: &str,
+    node_version: &str,
+) -> Result<()> {
     let builder = match runtime {
         config::RuntimeKind::Docker => "docker",
         config::RuntimeKind::AppleContainer => "container",
@@ -257,7 +264,16 @@ fn build_image(image: &str, runtime: config::RuntimeKind) -> Result<()> {
     )?;
     println!("building {image} via `{builder} build` (first build downloads the base image; takes a few minutes)");
     let status = StdCommand::new(builder)
-        .args(["build", "-t", image, "."])
+        .args([
+            "build",
+            "--build-arg",
+            &format!("PYTHON_VERSION={python_version}"),
+            "--build-arg",
+            &format!("NODE_VERSION={node_version}"),
+            "-t",
+            image,
+            ".",
+        ])
         .current_dir(&dir)
         .status()
         .with_context(|| format!("failed to run `{builder} build` — is the runtime running?"))?;
@@ -292,7 +308,7 @@ async fn init(path: &std::path::Path, repos: &[String], rebuild: bool) -> Result
             .map(|repo| format!("\n[[repos]]\nrepo = \"{repo}\"\nreserved = 1\nmax = 2\n"))
             .collect();
         let config_body = format!(
-            "[defaults]\nruntime = \"{runtime}\"\nlabels = [\"self-hosted\", \"linux\", \"{arch}\"]\n{repo_blocks}"
+            "[toolchains]\npython = \"3.13.1\"\nnode = \"24.14.0\"\n\n[defaults]\nruntime = \"{runtime}\"\nlabels = [\"self-hosted\", \"linux\", \"{arch}\"]\n{repo_blocks}"
         );
         std::fs::create_dir_all(path.parent().unwrap())?;
         std::fs::write(path, config_body)?;
@@ -307,7 +323,7 @@ async fn init(path: &std::path::Path, repos: &[String], rebuild: bool) -> Result
         .map(|rc| rc.runtime)
         .unwrap_or(config::RuntimeKind::Docker);
     if rebuild || !image_exists(&image, runtime) {
-        build_image(&image, runtime)?;
+        build_image(&image, runtime, &cfg.python_version, &cfg.node_version)?;
     } else {
         println!("image {image}: already built (--rebuild to force)");
     }

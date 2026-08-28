@@ -9,6 +9,10 @@ data_dir = "~/.local/share/homerunner"
 [auth]
 source = "gh"                  # `gh auth token` | "env:HOMERUNNER_PAT" | "file:~/.homerunner-pat"
 
+[toolchains]
+python = "3.13.1"              # baked into the actions/setup-python tool cache
+node = "24.14.0"               # baked into the actions/setup-node tool cache
+
 [defaults]
 runtime = "docker"             # "docker" | "apple-container" (requires Apple Silicon)
 labels = ["self-hosted", "linux", "x64"]

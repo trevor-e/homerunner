@@ -62,10 +62,10 @@ latency vs Docker (`container run` to "Listening for Jobs").
 ## Phase 3 — driver end-to-end
 
 ```sh
-cargo build --release
-# config.toml: runtime = "apple-container", labels = ["self-hosted","linux","arm64"]
-target/release/homerunner doctor
-target/release/homerunner run
+cargo install --path .
+homerunner init --repo you/scratch-repo   # on arm64 this defaults to
+                                          # runtime = "apple-container" + arm64 labels
+homerunner run
 ```
 
 Point it at a scratch private repo with a trivial workflow using

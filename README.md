@@ -28,13 +28,16 @@ GitHub-hosted runners.
 ## Setup
 
 ```sh
-brew install gh && gh auth login    # token: repo scope
-scripts/build-image.sh
-cp config.example.toml ~/.config/homerunner/config.toml
-cargo build --release
-target/release/homerunner doctor
-target/release/homerunner install   # launchd agent (or `run` for foreground)
+brew install gh && gh auth login      # token: repo scope
+cargo install --path .
+homerunner init --repo you/yourrepo   # writes config, builds the runner image, checks access
+homerunner install                    # launchd agent (or `run` for foreground)
 ```
+
+The Dockerfile is embedded in the binary, so `init` on a fresh machine needs
+nothing but Docker (or apple/container) and `gh`. `init` picks defaults by
+arch — `apple-container`/arm64 labels on Apple Silicon, `docker`/x64
+otherwise — and leaves an existing config alone.
 
 Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 
@@ -46,6 +49,8 @@ Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 | `status` | pool summary |
 | `doctor` | check token, runtime, image, repo access |
 | `install` | launchd agent, starts at login |
+| `init` | one-time setup (config + image + doctor) |
+| `build-image` | rebuild the runner image from the embedded Dockerfile |
 
 ## Notes
 

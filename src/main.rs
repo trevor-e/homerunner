@@ -32,6 +32,17 @@ enum Cmd {
     Doctor,
     /// Write + bootstrap the launchd agent
     Install,
+    /// One-time setup: write config, build the runner image, check access
+    Init {
+        /// Repo(s) to serve, e.g. --repo you/yourrepo (repeatable)
+        #[arg(long)]
+        repo: Vec<String>,
+        /// Rebuild the runner image even if it already exists
+        #[arg(long)]
+        rebuild: bool,
+    },
+    /// (Re)build the runner image from the embedded Dockerfile
+    BuildImage,
 }
 
 fn config_path(cli: &Cli) -> PathBuf {
@@ -49,13 +60,108 @@ async fn main() -> Result<()> {
         return install(&path);
     }
 
+    if let Cmd::Init { repo, rebuild } = &cli.command {
+        return init(&path, repo, *rebuild).await;
+    }
+
     let cfg = config::load(&path)?;
     match cli.command {
         Cmd::Run => run(cfg).await,
         Cmd::Status => status(cfg).await,
         Cmd::Doctor => doctor(cfg).await,
-        Cmd::Install => unreachable!(),
+        Cmd::BuildImage => build_image(
+            &default_image(&cfg),
+            cfg.repos.first().map(|rc| rc.runtime).unwrap_or(config::RuntimeKind::Docker),
+        ),
+        Cmd::Install | Cmd::Init { .. } => unreachable!(),
     }
+}
+
+fn default_image(cfg: &config::Config) -> String {
+    cfg.repos
+        .first()
+        .map(|rc| rc.image.clone())
+        .unwrap_or_else(|| "homerunner-runner:local".into())
+}
+
+fn image_exists(image: &str, runtime: config::RuntimeKind) -> bool {
+    let cli = match runtime {
+        config::RuntimeKind::Docker => "docker",
+        config::RuntimeKind::AppleContainer => "container",
+    };
+    StdCommand::new(cli)
+        .args(["image", "inspect", image])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Build the runner image from the Dockerfile + entrypoint embedded in the
+/// binary, so a fresh machine needs nothing but this executable and a
+/// container runtime. The builder CLI follows the runtime: `docker build`
+/// or apple/container's `container build`.
+fn build_image(image: &str, runtime: config::RuntimeKind) -> Result<()> {
+    let builder = match runtime {
+        config::RuntimeKind::Docker => "docker",
+        config::RuntimeKind::AppleContainer => "container",
+    };
+    let dir = std::env::temp_dir().join(format!("homerunner-image-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("Dockerfile"), include_str!("../images/runner/Dockerfile"))?;
+    std::fs::write(dir.join("entrypoint.sh"), include_str!("../images/runner/entrypoint.sh"))?;
+    println!("building {image} via `{builder} build` (first build downloads the base image; takes a few minutes)");
+    let status = StdCommand::new(builder)
+        .args(["build", "-t", image, "."])
+        .current_dir(&dir)
+        .status()
+        .with_context(|| format!("failed to run `{builder} build` — is the runtime running?"))?;
+    let _ = std::fs::remove_dir_all(&dir);
+    anyhow::ensure!(status.success(), "{builder} build failed");
+    Ok(())
+}
+
+async fn init(path: &std::path::Path, repos: &[String], rebuild: bool) -> Result<()> {
+    if path.exists() {
+        println!("config: {} (already exists, leaving it alone)", path.display());
+    } else {
+        anyhow::ensure!(
+            !repos.is_empty(),
+            "no config at {} — pass at least one --repo owner/name to create it",
+            path.display()
+        );
+        for repo in repos {
+            anyhow::ensure!(repo.contains('/'), "--repo must be owner/name, got: {repo}");
+        }
+        // Arch-aware defaults: Apple Silicon gets the VM-per-job runtime.
+        let (runtime, arch) = if std::env::consts::ARCH == "aarch64" {
+            ("apple-container", "arm64")
+        } else {
+            ("docker", "x64")
+        };
+        let repo_blocks: String = repos
+            .iter()
+            .map(|repo| format!("\n[[repos]]\nrepo = \"{repo}\"\npool_size = 2\n"))
+            .collect();
+        let config_body = format!(
+            "[defaults]\nruntime = \"{runtime}\"\nlabels = [\"self-hosted\", \"linux\", \"{arch}\"]\n{repo_blocks}"
+        );
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(path, config_body)?;
+        println!("config: wrote {}", path.display());
+    }
+
+    let cfg = config::load(path)?;
+    let image = default_image(&cfg);
+    let runtime = cfg.repos.first().map(|rc| rc.runtime).unwrap_or(config::RuntimeKind::Docker);
+    if rebuild || !image_exists(&image, runtime) {
+        build_image(&image, runtime)?;
+    } else {
+        println!("image {image}: already built (--rebuild to force)");
+    }
+
+    doctor(cfg).await?;
+    println!("\nready — `homerunner install` for the launchd agent, or `homerunner run` for foreground");
+    Ok(())
 }
 
 async fn run(cfg: config::Config) -> Result<()> {
@@ -156,7 +262,7 @@ async fn doctor(cfg: config::Config) -> Result<()> {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
-        println!("image {image}: {}", if found { "ok" } else { "MISSING (scripts/build-image.sh)" });
+        println!("image {image}: {}", if found { "ok" } else { "MISSING (homerunner build-image)" });
         ok = ok && found;
     }
 

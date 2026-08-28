@@ -13,11 +13,18 @@ source = "gh"                  # `gh auth token` | "env:HOMERUNNER_PAT" | "file:
 runtime = "docker"             # "docker" | "apple-container" (requires Apple Silicon)
 labels = ["self-hosted", "linux", "x64"]
 image = "homerunner-runner:local"
-pool_size = 1                  # warm listeners kept alive = per-repo concurrency cap
+reserved = 1                   # warm listeners always alive (0 = fully on-demand)
+max = 2                        # burst ceiling; queued jobs scale the pool up to this
 job_timeout_min = 120          # kill + respawn a wedged busy runner
 caffeinate = true              # keep the Mac awake while a job is running
 # registry_mirror = "http://host.docker.internal:5001"
 
 [[repos]]
 repo = "trevor-e/adulting"
-pool_size = 2
+reserved = 2
+max = 3
+
+[[repos]]
+repo = "trevor-e/sidequest"    # low-traffic repo: no idle cost, ~30s pickup latency
+reserved = 0
+max = 1

@@ -25,7 +25,8 @@ struct RepoDefaults {
     runtime: Option<RuntimeKind>,
     labels: Option<Vec<String>>,
     image: Option<String>,
-    pool_size: Option<u32>,
+    reserved: Option<u32>,
+    max: Option<u32>,
     job_timeout_min: Option<u64>,
     caffeinate: Option<bool>,
     registry_mirror: Option<String>,
@@ -44,6 +45,8 @@ struct SupervisorSection {
     max_total_runners: Option<u32>,
     data_dir: Option<String>,
     keep_failed_workspaces: Option<u32>,
+    poll_interval_s: Option<u64>,
+    idle_decay_min: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -69,7 +72,10 @@ pub struct RepoConfig {
     pub runtime: RuntimeKind,
     pub labels: Vec<String>,
     pub image: String,
-    pub pool_size: u32,
+    /// Warm listeners always kept alive (0 = fully on-demand).
+    pub reserved: u32,
+    /// Burst ceiling: the poller may scale up to this many concurrent runners.
+    pub max: u32,
     pub job_timeout_min: u64,
     pub caffeinate: bool,
     pub registry_mirror: Option<String>,
@@ -88,6 +94,10 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// How many failed-job workspaces to keep as post-mortem images (0 = off).
     pub keep_failed_workspaces: u32,
+    /// Queued-jobs poll cadence for repos that can burst (max > reserved).
+    pub poll_interval_s: u64,
+    /// Minutes an idle burst runner (beyond reserved) lives before decay.
+    pub idle_decay_min: u64,
     pub auth_source: String,
     pub repos: Vec<RepoConfig>,
 }
@@ -135,7 +145,8 @@ pub fn load(path: &Path) -> Result<Config> {
                 .clone()
                 .or_else(|| d.image.clone())
                 .unwrap_or_else(|| "homerunner-runner:local".into()),
-            pool_size: o.pool_size.or(d.pool_size).unwrap_or(1),
+            reserved: o.reserved.or(d.reserved).unwrap_or(1),
+            max: o.max.or(d.max).unwrap_or(2),
             job_timeout_min: o.job_timeout_min.or(d.job_timeout_min).unwrap_or(120),
             caffeinate: o.caffeinate.or(d.caffeinate).unwrap_or(true),
             registry_mirror: o
@@ -146,6 +157,19 @@ pub fn load(path: &Path) -> Result<Config> {
     }
     if repos.is_empty() {
         bail!("no [[repos]] configured");
+    }
+    for rc in &repos {
+        if rc.max < rc.reserved {
+            bail!(
+                "repo {}: max ({}) must be >= reserved ({})",
+                rc.repo,
+                rc.max,
+                rc.reserved
+            );
+        }
+        if rc.max == 0 {
+            bail!("repo {}: max must be at least 1", rc.repo);
+        }
     }
 
     let data_dir = expand_tilde(
@@ -160,6 +184,8 @@ pub fn load(path: &Path) -> Result<Config> {
         dashboard_port: raw.supervisor.dashboard_port.unwrap_or(8123),
         max_total_runners: raw.supervisor.max_total_runners.unwrap_or(4),
         keep_failed_workspaces: raw.supervisor.keep_failed_workspaces.unwrap_or(2),
+        poll_interval_s: raw.supervisor.poll_interval_s.unwrap_or(30),
+        idle_decay_min: raw.supervisor.idle_decay_min.unwrap_or(10),
         data_dir,
         auth_source: raw.auth.source.unwrap_or_else(|| "gh".into()),
         repos,

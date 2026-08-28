@@ -71,7 +71,11 @@ marks kept workspaces.
 
 ## Notes
 
-- `pool_size` is the per-repo concurrency cap; extra jobs queue on GitHub.
+- Per repo, `reserved` warm runners stay listening (0 = fully on-demand) and
+  queued jobs burst the pool up to `max`. Warm pickups are push-latency; burst
+  and on-demand pickups add up to `poll_interval_s` (default 30s). Idle burst
+  runners decay after `idle_decay_min`. If `max == reserved` everywhere,
+  nothing ever polls.
 - Add a `concurrency` block with `cancel-in-progress` to your workflows, or
   superseded pushes hold runners.
 - Rebuild the image when `actions/runner` releases move on — GitHub rejects

@@ -75,7 +75,11 @@ impl Store {
     /// connection is a normal one — a strictly read-only connection can't
     /// apply the supervisor's WAL and silently reads stale (even empty) data.
     pub fn open_readonly(path: &Path) -> Result<Self> {
-        anyhow::ensure!(path.exists(), "no journal at {} (has the supervisor run?)", path.display());
+        anyhow::ensure!(
+            path.exists(),
+            "no journal at {} (has the supervisor run?)",
+            path.display()
+        );
         let db = Connection::open(path)?;
         db.pragma_update(None, "query_only", "ON")?;
         Ok(Self { db })

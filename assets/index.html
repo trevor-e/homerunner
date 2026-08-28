@@ -190,7 +190,7 @@ async function refresh() {
   $("tiles").innerHTML = d.repos.map((r) => `
     <div class="tile">
       <div class="repo" title="${esc(r.repo)}">${esc(r.repo)}</div>
-      <div class="fraction num">${r.live}<small> / ${r.pool_size} runners</small></div>
+      <div class="fraction num">${r.live}<small> live · ${r.reserved} reserved · ${r.max} max</small></div>
       <div class="sub">${esc(r.runtime)}</div>
     </div>`).join("");
 

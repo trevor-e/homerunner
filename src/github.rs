@@ -181,6 +181,43 @@ impl GitHub {
         Ok(None)
     }
 
+    /// Count queued jobs whose labels our runners satisfy. A run is only
+    /// `queued` until its first job starts, so in_progress runs are scanned
+    /// too. Used by the burst poller, never the warm path.
+    pub async fn count_queued_jobs(&self, repo: &str, our_labels: &[String]) -> Result<u32> {
+        let mut count = 0u32;
+        for status in ["queued", "in_progress"] {
+            let runs = self
+                .get(&format!(
+                    "/repos/{repo}/actions/runs?status={status}&per_page=10"
+                ))
+                .await?;
+            for run in runs["workflow_runs"].as_array().into_iter().flatten() {
+                let run_id = run["id"].as_i64().unwrap_or_default();
+                let jobs = self
+                    .get(&format!(
+                        "/repos/{repo}/actions/runs/{run_id}/jobs?filter=latest&per_page=100"
+                    ))
+                    .await?;
+                for job in jobs["jobs"].as_array().into_iter().flatten() {
+                    let wants: Vec<&str> = job["labels"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|l| l.as_str())
+                        .collect();
+                    if job["status"].as_str() == Some("queued")
+                        && !wants.is_empty()
+                        && wants.iter().all(|l| our_labels.iter().any(|o| o == l))
+                    {
+                        count += 1;
+                    }
+                }
+            }
+        }
+        Ok(count)
+    }
+
     pub async fn latest_runner_release(&self) -> Result<String> {
         let body = self.get("/repos/actions/runner/releases/latest").await?;
         Ok(body["tag_name"]

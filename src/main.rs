@@ -217,7 +217,7 @@ async fn init(path: &std::path::Path, repos: &[String], rebuild: bool) -> Result
         };
         let repo_blocks: String = repos
             .iter()
-            .map(|repo| format!("\n[[repos]]\nrepo = \"{repo}\"\npool_size = 2\n"))
+            .map(|repo| format!("\n[[repos]]\nrepo = \"{repo}\"\nreserved = 1\nmax = 2\n"))
             .collect();
         let config_body = format!(
             "[defaults]\nruntime = \"{runtime}\"\nlabels = [\"self-hosted\", \"linux\", \"{arch}\"]\n{repo_blocks}"
@@ -279,10 +279,11 @@ async fn status(cfg: config::Config) -> Result<()> {
     let data: serde_json::Value = resp.json().await?;
     for repo in data["repos"].as_array().into_iter().flatten() {
         println!(
-            "{}: {}/{} live ({})",
+            "{}: {} live (reserved {}, max {}, {})",
             repo["repo"].as_str().unwrap_or("?"),
             repo["live"],
-            repo["pool_size"],
+            repo["reserved"],
+            repo["max"],
             repo["runtime"].as_str().unwrap_or("?"),
         );
     }

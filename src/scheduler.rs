@@ -1,7 +1,9 @@
-//! Warm-pool scheduler: keeps `pool_size` ephemeral JIT runners listening per
-//! repo. Event-driven only — jobs reach runners over the runner's own
-//! long-poll to GitHub; the supervisor reacts to local container exits and
-//! log lines, never to REST polling.
+//! Warm-pool scheduler: keeps `reserved` ephemeral JIT runners listening per
+//! repo (event-driven — jobs reach runners over the runner's own long-poll,
+//! and the supervisor reacts to local container exits and log lines). Repos
+//! with `max > reserved` additionally get a slow queued-jobs poll that bursts
+//! the pool up to `max`; burst runners decay back to `reserved` when idle.
+//! A config where max == reserved everywhere never polls at all.
 
 use crate::config::{Config, RepoConfig};
 use crate::github::GitHub;
@@ -56,6 +58,9 @@ pub struct RunnerInfo {
     pub created_at: f64,
     pub busy_at: Option<f64>,
     pub ran_job: bool,
+    /// Marked by the watchdog just before killing an idle burst runner, so
+    /// the reap path logs it as decay rather than a crash (no backoff).
+    pub decaying: bool,
     pub job: Value, // {job_name, job_id, run_id, workflow, html_url, conclusion}
     pub log_tail: VecDeque<String>,
     pub cpu_pct: f64,
@@ -152,7 +157,8 @@ impl App {
             "repos": self.config.repos.iter().map(|rc| json!({
                 "repo": rc.repo,
                 "runtime": rc.runtime.name(),
-                "pool_size": rc.pool_size,
+                "reserved": rc.reserved,
+                "max": rc.max,
                 "live": runners.values()
                     .filter(|r| r.state.live() && r.repo_cfg.repo == rc.repo).count(),
             })).collect::<Vec<_>>(),
@@ -184,7 +190,75 @@ pub async fn start(app: Arc<App>) {
     }
     tokio::spawn(watchdog(app.clone()));
     tokio::spawn(stats_sampler(app.clone()));
+    tokio::spawn(burst_poller(app.clone()));
     app.log("info", "scheduler", "started");
+}
+
+/// Slow queued-jobs poll, only for repos that can burst (max > reserved —
+/// which includes fully on-demand repos with reserved = 0). Spawns until
+/// every queued job has an idle listener, within per-repo and global caps.
+async fn burst_poller(app: Arc<App>) {
+    let bursty: Vec<RepoConfig> = app
+        .config
+        .repos
+        .iter()
+        .filter(|rc| rc.max > rc.reserved)
+        .cloned()
+        .collect();
+    if bursty.is_empty() {
+        return; // pure event-driven config: no polling at all
+    }
+    loop {
+        tokio::time::sleep(Duration::from_secs(app.config.poll_interval_s)).await;
+        for repo_cfg in &bursty {
+            if app
+                .degraded
+                .lock()
+                .unwrap()
+                .contains_key(repo_cfg.runtime.name())
+            {
+                continue;
+            }
+            let Ok(queued) = app
+                .github
+                .count_queued_jobs(&repo_cfg.repo, &repo_cfg.labels)
+                .await
+            else {
+                continue;
+            };
+            if queued == 0 {
+                continue;
+            }
+            loop {
+                let (idle, live_repo) = {
+                    let runners = app.runners.lock().unwrap();
+                    let idle = runners
+                        .values()
+                        .filter(|r| {
+                            r.state == RunnerState::Listening && r.repo_cfg.repo == repo_cfg.repo
+                        })
+                        .count() as u32;
+                    let live = runners
+                        .values()
+                        .filter(|r| r.state.live() && r.repo_cfg.repo == repo_cfg.repo)
+                        .count() as u32;
+                    (idle, live)
+                };
+                if idle >= queued
+                    || live_repo >= repo_cfg.max
+                    || app.live_count(None) >= app.config.max_total_runners
+                {
+                    break;
+                }
+                app.log(
+                    "info",
+                    "burst",
+                    &format!("{}: {queued} queued job(s), scaling up", repo_cfg.repo),
+                );
+                spawn_runner(&app, repo_cfg).await;
+            }
+        }
+    }
 }
 
 /// Sample per-runner CPU/memory every 15s while runners are live; keep the
@@ -280,6 +354,7 @@ async fn adopt_orphans(app: &Arc<App>) {
                             created_at: now(),
                             busy_at: None,
                             ran_job: false,
+                            decaying: false,
                             job: json!({}),
                             log_tail: VecDeque::new(),
                             cpu_pct: 0.0,
@@ -348,7 +423,7 @@ async fn top_up(app: &Arc<App>, repo_cfg: &RepoConfig) {
     {
         return;
     }
-    while app.live_count(Some(&repo_cfg.repo)) < repo_cfg.pool_size
+    while app.live_count(Some(&repo_cfg.repo)) < repo_cfg.reserved
         && app.live_count(None) < app.config.max_total_runners
     {
         spawn_runner(app, repo_cfg).await;
@@ -369,6 +444,7 @@ async fn spawn_runner(app: &Arc<App>, repo_cfg: &RepoConfig) {
         created_at: now(),
         busy_at: None,
         ran_job: false,
+        decaying: false,
         job: json!({}),
         log_tail: VecDeque::new(),
         cpu_pct: 0.0,
@@ -571,6 +647,8 @@ async fn watch_exit(
         if ran_job {
             *entry = 0;
             0
+        } else if info.decaying {
+            0 // deliberate scale-down, not a crash
         } else {
             *entry += 1;
             60u64.min(2u64.pow((*entry).min(6)))
@@ -583,11 +661,17 @@ async fn watch_exit(
             &format!("{name} finished its job (exit {code})"),
         );
     } else {
-        app.log(
-            "warn",
-            "reap",
-            &format!("{name} exited without a job (exit {code})"),
-        );
+        if !info.decaying {
+            app.log(
+                "warn",
+                "reap",
+                &format!("{name} exited without a job (exit {code})"),
+            );
+        }
+        // A runner that never took a job leaves its JIT registration behind.
+        if let Some(gh_id) = info.gh_runner_id {
+            let _ = app.github.delete_runner(&repo_cfg.repo, gh_id).await;
+        }
     }
     app.update_caffeinate();
 
@@ -778,6 +862,46 @@ async fn watchdog(app: Arc<App>) {
                 "error",
                 "watchdog",
                 &format!("{name} exceeded job timeout; killing"),
+            );
+            kind.kill(&container_id).await;
+        }
+        // Idle burst runners beyond the reserved floor decay after a while.
+        let decay_after = app.config.idle_decay_min as f64 * 60.0;
+        let mut to_decay: Vec<(String, crate::config::RuntimeKind, String)> = Vec::new();
+        {
+            let mut runners = app.runners.lock().unwrap();
+            for rc in &app.config.repos {
+                let live = runners
+                    .values()
+                    .filter(|r| r.state.live() && r.repo_cfg.repo == rc.repo)
+                    .count() as u32;
+                if live <= rc.reserved {
+                    continue;
+                }
+                let mut idle_old: Vec<(String, f64)> = runners
+                    .iter()
+                    .filter(|(_, r)| {
+                        r.state == RunnerState::Listening
+                            && !r.decaying
+                            && r.repo_cfg.repo == rc.repo
+                            && ts - r.created_at > decay_after
+                    })
+                    .map(|(n, r)| (n.clone(), r.created_at))
+                    .collect();
+                idle_old.sort_by(|a, b| a.1.total_cmp(&b.1));
+                for (name, _) in idle_old.into_iter().take((live - rc.reserved) as usize) {
+                    if let Some(info) = runners.get_mut(&name) {
+                        info.decaying = true;
+                        to_decay.push((name, info.repo_cfg.runtime, info.container_id.clone()));
+                    }
+                }
+            }
+        }
+        for (name, kind, container_id) in to_decay {
+            app.log(
+                "info",
+                "decay",
+                &format!("{name} idle beyond reserved; scaling down"),
             );
             kind.kill(&container_id).await;
         }

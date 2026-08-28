@@ -139,6 +139,14 @@
     </table></div>
     <div class="empty" id="jobs-empty" hidden>No jobs yet — push something.</div>
   </section>
+
+  <section>
+    <h2>Disk</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>What</th><th>Where</th><th>Size</th><th>Retention</th></tr></thead>
+      <tbody id="disk"></tbody>
+    </table></div>
+  </section>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -225,8 +233,35 @@ async function refresh() {
   $("jobs-empty").hidden = (d.jobs || []).some((j) => j.job_name);
 }
 
+function fmtBytes(b) {
+  if (!b) return "0";
+  if (b >= 1024 ** 3) return (b / 1024 ** 3).toFixed(1) + " GB";
+  if (b >= 1024 ** 2) return Math.round(b / 1024 ** 2) + " MB";
+  return Math.round(b / 1024) + " KB";
+}
+
+async function refreshDisk() {
+  let d;
+  try { d = await (await fetch("/api/disk")).json(); } catch { return; }
+  const rows = [
+    ["Captured job logs", d.job_logs.path, `${fmtBytes(d.job_logs.bytes)} (${d.job_logs.jobs} jobs)`, d.job_logs.retention],
+    ["Journal (SQLite)", d.journal.path, fmtBytes(d.journal.bytes), d.journal.retention],
+    ...d.images.list.map((i) => [
+      i.tag.startsWith("homerunner-kept") ? "Kept workspace" : "Runner image",
+      i.tag, i.size,
+      i.tag.startsWith("homerunner-kept") ? d.images.retention : "rebuild via `homerunner build-image`",
+    ]),
+    ...d.volumes.list.map((v) => ["Cache volume", v.name, v.size, d.volumes.retention]),
+  ];
+  document.getElementById("disk").innerHTML = rows.map(([what, where, size, note]) => `
+    <tr><td>${esc(what)}</td><td class="mono dim shrink" title="${esc(where)}">${esc(where)}</td>
+        <td class="dim num">${esc(size)}</td><td class="dim">${esc(note)}</td></tr>`).join("");
+}
+
 refresh();
+refreshDisk();
 setInterval(refresh, 30000); // fallback; SSE below is the trigger
+setInterval(refreshDisk, 300000);
 new EventSource("/events").onmessage = refresh;
 </script>
 </body>

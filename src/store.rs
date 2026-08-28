@@ -164,6 +164,20 @@ impl Store {
         );
     }
 
+    pub fn clear_log_dir(&self, log_dir: &str) {
+        let _ = self.db.execute(
+            "UPDATE jobs SET log_dir=NULL WHERE log_dir=?1",
+            params![log_dir],
+        );
+    }
+
+    pub fn prune_events(&self, older_than_s: f64) {
+        let _ = self.db.execute(
+            "DELETE FROM events WHERE ts < ?1",
+            params![now() - older_than_s],
+        );
+    }
+
     pub fn clear_kept_image(&self, gh_job_id: i64) {
         let _ = self.db.execute(
             "UPDATE jobs SET kept_image=NULL WHERE gh_job_id=?1",

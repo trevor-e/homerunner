@@ -631,6 +631,7 @@ async fn watch_exit(
         app.log("warn", "reap", &format!("{name} was OOM-killed"));
     }
     gc_kept_images(&app, kind).await;
+    prune_job_logs(&app);
 
     {
         let mut runners = app.runners.lock().unwrap();
@@ -820,6 +821,43 @@ async fn enrich_job(app: Arc<App>, name: String) {
     }
 }
 
+/// Keep only the newest `keep_job_logs` captured-log dirs; older ones are
+/// removed and their journal references cleared.
+fn prune_job_logs(app: &Arc<App>) {
+    let jobs_dir = app.config.data_dir.join("jobs");
+    let Ok(entries) = std::fs::read_dir(&jobs_dir) else {
+        return;
+    };
+    let mut dirs: Vec<(std::path::PathBuf, std::time::SystemTime)> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|e| {
+            let modified = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (e.path(), modified)
+        })
+        .collect();
+    let budget = app.config.keep_job_logs as usize;
+    if dirs.len() <= budget {
+        return;
+    }
+    dirs.sort_by_key(|(_, modified)| *modified);
+    for (path, _) in dirs.iter().take(dirs.len() - budget) {
+        let _ = std::fs::remove_dir_all(path);
+        app.store
+            .lock()
+            .unwrap()
+            .clear_log_dir(&path.to_string_lossy());
+        app.log(
+            "info",
+            "prune",
+            &format!("removed old job logs {}", path.display()),
+        );
+    }
+}
+
 /// Drop the oldest kept post-mortem images beyond the configured budget.
 async fn gc_kept_images(app: &Arc<App>, kind: crate::config::RuntimeKind) {
     let excess: Vec<(i64, String)> = {
@@ -907,6 +945,7 @@ async fn watchdog(app: Arc<App>) {
         }
         if ts - last_release_check > 86_400.0 {
             last_release_check = ts;
+            app.store.lock().unwrap().prune_events(7.0 * 86_400.0);
             if let Ok(latest) = app.github.latest_runner_release().await {
                 app.log(
                     "info",

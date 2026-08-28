@@ -45,6 +45,7 @@ struct SupervisorSection {
     max_total_runners: Option<u32>,
     data_dir: Option<String>,
     keep_failed_workspaces: Option<u32>,
+    keep_job_logs: Option<u32>,
     poll_interval_s: Option<u64>,
     idle_decay_min: Option<u64>,
 }
@@ -94,6 +95,8 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// How many failed-job workspaces to keep as post-mortem images (0 = off).
     pub keep_failed_workspaces: u32,
+    /// How many jobs' captured log dirs to keep (oldest pruned at reap).
+    pub keep_job_logs: u32,
     /// Queued-jobs poll cadence for repos that can burst (max > reserved).
     pub poll_interval_s: u64,
     /// Minutes an idle burst runner (beyond reserved) lives before decay.
@@ -184,6 +187,7 @@ pub fn load(path: &Path) -> Result<Config> {
         dashboard_port: raw.supervisor.dashboard_port.unwrap_or(8123),
         max_total_runners: raw.supervisor.max_total_runners.unwrap_or(4),
         keep_failed_workspaces: raw.supervisor.keep_failed_workspaces.unwrap_or(2),
+        keep_job_logs: raw.supervisor.keep_job_logs.unwrap_or(100),
         poll_interval_s: raw.supervisor.poll_interval_s.unwrap_or(30),
         idle_decay_min: raw.supervisor.idle_decay_min.unwrap_or(10),
         data_dir,

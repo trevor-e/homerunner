@@ -184,7 +184,7 @@ pub fn load(path: &Path) -> Result<Config> {
     std::fs::create_dir_all(&data_dir)?;
 
     Ok(Config {
-        dashboard_port: raw.supervisor.dashboard_port.unwrap_or(8123),
+        dashboard_port: raw.supervisor.dashboard_port.unwrap_or(4123),
         max_total_runners: raw.supervisor.max_total_runners.unwrap_or(4),
         keep_failed_workspaces: raw.supervisor.keep_failed_workspaces.unwrap_or(2),
         keep_job_logs: raw.supervisor.keep_job_logs.unwrap_or(100),

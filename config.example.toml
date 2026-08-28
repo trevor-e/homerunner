@@ -2,7 +2,7 @@
 # per [[repos] ] entry.
 
 [supervisor]
-dashboard_port = 8123          # dashboard binds 127.0.0.1 only
+dashboard_port = 4123          # dashboard binds 127.0.0.1 only
 max_total_runners = 4          # global cap across repos (RAM guard)
 data_dir = "~/.local/share/homerunner"
 

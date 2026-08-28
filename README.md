@@ -55,7 +55,7 @@ Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 
 | | |
 |---|---|
-| `run` | supervisor + dashboard (http://127.0.0.1:8123) in the foreground |
+| `run` | supervisor + dashboard (http://127.0.0.1:4123) in the foreground |
 | `status` | pool summary |
 | `jobs [--json]` | job history, with log/workspace availability |
 | `why [job] [--json]` | failure digest: what ran, log excerpt around the error |

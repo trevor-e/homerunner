@@ -5,11 +5,21 @@ runners per repo: each one takes a single job in its own container/VM, exits,
 and gets replaced. Self-hosted minutes are free, and logs/checks show up in
 GitHub like normal.
 
-Two runtimes:
+Three things make it more than a quota workaround:
 
-- `apple-container` — one lightweight VM per job (Apple Silicon). Not yet
-  verified on real hardware: [docs/arm64-verification.md](docs/arm64-verification.md)
-- `docker` — privileged containers, works everywhere Docker does
+- **CI state stays on your machine.** Step logs are captured from every job,
+  and a failed job keeps its *entire workspace* — checkout, build state,
+  tmpdirs — as a local image. `homerunner exec` opens a shell in the exact
+  failed state, so a flaky test gets rerun in place instead of reasoned about
+  from a log viewer. Hosted CI throws all of this away.
+- **Built for agents.** `homerunner why` prints a failure digest (what ran,
+  the log excerpt around the error, whether the workspace was kept), every
+  query takes `--json`, and `homerunner mcp` serves the same queries as MCP
+  tools — so a coding agent can debug CI without touching GitHub's API.
+- **VM-per-job isolation** via [apple/container](https://github.com/apple/container)
+  on Apple Silicon (not yet verified on hardware:
+  [docs/arm64-verification.md](docs/arm64-verification.md)), with a
+  `--privileged` Docker driver everywhere else.
 
 Each runner gets a private dockerd, so `services:` blocks behave exactly like
 GitHub-hosted runners.
@@ -47,27 +57,17 @@ Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 |---|---|
 | `run` | supervisor + dashboard (http://127.0.0.1:8123) in the foreground |
 | `status` | pool summary |
-| `doctor` | check token, runtime, image, repo access |
-| `install` | launchd agent, starts at login |
-| `init` | one-time setup (config + image + doctor) |
-| `build-image` | rebuild the runner image from the embedded Dockerfile |
-
-## For agents
-
-CI state is local — captured at reap time, queryable without touching
-GitHub's API:
-
-| | |
-|---|---|
 | `jobs [--json]` | job history, with log/workspace availability |
 | `why [job] [--json]` | failure digest: what ran, log excerpt around the error |
 | `logs [job]` | full captured step logs (`latest`, `latest-failed`, or an id) |
 | `exec [job]` | shell inside a kept failed-job workspace |
-| `mcp` | same queries as MCP tools: `claude mcp add homerunner -- homerunner mcp` |
+| `mcp` | MCP server over stdio: `claude mcp add homerunner -- homerunner mcp` |
+| `doctor` | check token, runtime, image, repo access |
+| `init` / `install` / `build-image` | one-time setup, launchd agent, image rebuild |
 
-Failed jobs keep their entire workspace (checkout, build state, tmpdirs) as
-a local image — `keep_failed_workspaces` sets how many, default 2 — so a
-failing test can be rerun in place instead of reasoned about from logs.
+Failed jobs keep their workspace as a local image (`keep_failed_workspaces`,
+default 2, oldest GC'd). The dashboard links each job's captured logs and
+marks kept workspaces.
 
 ## Notes
 

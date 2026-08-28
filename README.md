@@ -82,3 +82,15 @@ marks kept workspaces.
 - Rebuild the image when `actions/runner` releases move on — GitHub rejects
   runners that are a few versions stale (the supervisor logs the latest daily).
 - Jobs queue while the Mac sleeps; `caffeinate = true` keeps it awake mid-job.
+
+## Related: local-ci
+
+[local-ci](https://github.com/redwoodjs/local-ci) is the other half of this
+idea, and a very good one: it runs the same official runner binary against a
+locally emulated GitHub API, so workflows execute on your dirty working tree
+*before* you push — no registration, no commits, no status checks. Use it
+when you can't touch a repo's workflows (day job) and want a pre-flight
+loop; use homerunner when you control the repo and want the *real* post-push
+CI — registered runners, status checks, the queue — running on your own
+hardware. They compose: local-ci makes the push green, homerunner makes the
+gatekeeping run fast.

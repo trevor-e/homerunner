@@ -6,6 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl jq zstd unzip xz-utils ca-certificates gnupg \
       build-essential sudo iptables util-linux \
+      python3 python3-venv python3-pip \
     && echo "runner ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/runner \
     && chmod 0440 /etc/sudoers.d/runner \
     && rm -rf /var/lib/apt/lists/*
@@ -33,11 +34,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Cache-volume mountpoints must pre-exist owned by runner: Docker creates
 # missing mountpoint parents as root, which breaks uv/pnpm writing to
-# ~/.local and ~/.cache. RUNNER_TOOL_CACHE points setup-* actions at the
-# shared toolcache volume instead of the ephemeral _work/_tool default.
-RUN mkdir -p /opt/hostedtoolcache /home/runner/.cache /home/runner/.local/share/pnpm/store \
-    && chown -R runner:runner /opt/hostedtoolcache /home/runner/.cache /home/runner/.local
-ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache
+# ~/.local and ~/.cache. (No shared toolcache volume: setup-* actions race
+# when concurrent runners populate one toolcache; the per-job _work/_tool
+# default is what hosted runners do.)
+RUN mkdir -p /home/runner/.cache /home/runner/.local/share/pnpm/store \
+    && chown -R runner:runner /home/runner/.cache /home/runner/.local
 
 # The inner dockerd cannot nest overlayfs on the container's own overlay FS.
 VOLUME /var/lib/docker

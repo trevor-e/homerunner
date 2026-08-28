@@ -28,7 +28,7 @@ fi
 
 # Volumes created by an older image may be root-owned; top-level chown is
 # enough (contents written by runner stay runner-owned).
-chown runner:runner /opt/hostedtoolcache /home/runner/.cache \
+chown runner:runner /home/runner/.cache \
   /home/runner/.local /home/runner/.local/share /home/runner/.local/share/pnpm \
   /home/runner/.local/share/pnpm/store 2>/dev/null || true
 

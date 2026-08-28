@@ -17,11 +17,12 @@ MANAGED_LABEL = "homerunner.managed"
 REPO_LABEL = "homerunner.repo"
 RUNNER_LABEL = "homerunner.runner"
 
-# Named volumes shared across runners: warm tool/dependency caches are where
-# self-hosted beats GitHub-hosted on wall time. (uv + pnpm stores are
-# concurrency-safe.)
+# Named volumes shared across runners: warm dependency caches are where
+# self-hosted beats GitHub-hosted on wall time. Only concurrency-safe caches
+# belong here (uv cache and pnpm store are content-addressed) — never a
+# shared RUNNER_TOOL_CACHE, which races when concurrent setup-* actions
+# populate it.
 CACHE_VOLUMES = {
-    "homerunner-toolcache": "/opt/hostedtoolcache",
     "homerunner-home-cache": "/home/runner/.cache",
     "homerunner-pnpm-store": "/home/runner/.local/share/pnpm/store",
 }

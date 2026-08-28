@@ -14,8 +14,9 @@ per job, zero REST polling, push-latency pickups.
 Each runner container runs a **private inner dockerd**, so workflow
 `services:` blocks (e.g. Postgres with published ports) behave exactly like
 GitHub-hosted runners — `localhost:<port>` works, and concurrent jobs can't
-collide on ports. Shared named volumes keep uv/pnpm/toolcache/Playwright
-caches warm across jobs, which is where a local runner beats hosted speed.
+collide on ports. Shared named volumes keep the concurrency-safe caches
+(uv cache, pnpm store, Playwright browsers) warm across jobs, which is where
+a local runner beats hosted speed.
 
 > **Private repos only.** Never point this at a public repo: fork PRs would
 > run arbitrary code on your machine.
@@ -65,6 +66,7 @@ apple/container; requires arm64 — the driver reports why when it can't run).
   refuses runners more than a few versions stale. The supervisor logs the
   latest release daily — rebuild the image when it drifts.
 - Cache-volume mountpoints are pre-created in the image owned by `runner`
-  (Docker creates missing mountpoints as root, which breaks uv/pnpm), and
-  `RUNNER_TOOL_CACHE=/opt/hostedtoolcache` points setup-* actions at the
-  shared toolcache volume.
+  (Docker creates missing mountpoints as root, which breaks uv/pnpm).
+- No shared `RUNNER_TOOL_CACHE`: concurrent setup-* actions race when they
+  populate one toolcache, so each job keeps the ephemeral `_work/_tool`
+  default, exactly like hosted runners.

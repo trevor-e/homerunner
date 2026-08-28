@@ -220,6 +220,9 @@ class Scheduler:
         async for line in runtime.logs(runner.container_id):
             runner.log_tail.append(line)
             if match := RUNNING_JOB_RE.search(line):
+                # The runner prints each diagnostic both bare and timestamped.
+                if runner.state is RunnerState.BUSY:
+                    continue
                 runner.state = RunnerState.BUSY
                 runner.busy_at = time.time()
                 runner.ran_job = True
@@ -229,6 +232,8 @@ class Scheduler:
                 self._log("info", "job", f"{runner.name} running: {match['job']}")
                 self.on_change()
             elif match := COMPLETED_RE.search(line):
+                if runner.job_info.get("conclusion"):
+                    continue
                 conclusion = RESULT_MAP.get(match["result"], match["result"].lower())
                 runner.job_info["conclusion"] = conclusion
                 if job_id := runner.job_info.get("job_id"):
@@ -239,11 +244,18 @@ class Scheduler:
                 self.on_change()
 
     async def _enrich_job(self, runner: Runner) -> None:
-        """One REST lookup per busy transition, purely for the dashboard."""
-        try:
-            info = await self.github.find_job_by_runner(runner.repo_cfg.repo, runner.name)
-        except GitHubError:
-            return
+        """A few REST lookups per busy transition, purely for the dashboard.
+        Retries because the jobs API lags the runner's own log line in
+        reporting runner_name."""
+        info = None
+        for _ in range(5):
+            try:
+                info = await self.github.find_job_by_runner(runner.repo_cfg.repo, runner.name)
+            except GitHubError:
+                return
+            if info or runner.state is not RunnerState.BUSY:
+                break
+            await asyncio.sleep(8)
         if info:
             runner.job_info.update(info)
             self.store.upsert_job(

@@ -1,0 +1,29 @@
+# Manual smoke test for the runner system itself — including a deliberate
+# failure mode to exercise log capture and kept post-mortem workspaces.
+name: smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      outcome:
+        description: pass or fail
+        default: pass
+        type: choice
+        options: [pass, fail]
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "hello from homerunner's own pool"
+      - run: |
+          echo "writing a breadcrumb into the workspace"
+          echo "leftover state for post-mortem inspection" > breadcrumb.txt
+      - name: Maybe fail
+        run: |
+          if [ "${{ inputs.outcome }}" = "fail" ]; then
+            echo "simulated failure: the widget did not frobnicate"
+            exit 1
+          fi
+          echo "all good"

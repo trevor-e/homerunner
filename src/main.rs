@@ -56,6 +56,11 @@ enum Cmd {
     },
     /// Open a shell inside a kept failed-job workspace
     Exec { job: Option<String> },
+    /// Follow the live event stream (typed JSON with --json, NDJSON)
+    Events {
+        #[arg(long)]
+        json: bool,
+    },
     /// Serve runner state as MCP tools over stdio
     Mcp,
     /// One-time setup: write config, build the runner image, check access
@@ -140,9 +145,60 @@ async fn main() -> Result<()> {
                 .exec();
             anyhow::bail!("docker run failed: {err}")
         }
+        Cmd::Events { json } => events_cli(cfg, json).await,
         Cmd::Mcp => mcp::serve(cfg).await,
         Cmd::Install | Cmd::Init { .. } => unreachable!(),
     }
+}
+
+/// Tail the supervisor's SSE feed; one event per line (NDJSON with --json).
+async fn events_cli(cfg: config::Config, json_mode: bool) -> Result<()> {
+    use futures::StreamExt;
+    let url = format!("http://127.0.0.1:{}/events", cfg.dashboard_port);
+    let resp = reqwest::get(&url)
+        .await
+        .context("supervisor not running (dashboard unreachable)")?;
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+    while let Some(chunk) = stream.next().await {
+        buf.push_str(&String::from_utf8_lossy(&chunk?));
+        while let Some(pos) = buf.find('\n') {
+            let line = buf[..pos].trim().to_string();
+            buf.drain(..=pos);
+            let Some(data) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            if json_mode {
+                println!("{data}");
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
+                continue;
+            };
+            match v["kind"].as_str().unwrap_or("") {
+                "stats" => {} // too chatty for human mode
+                "log" => println!(
+                    "[{}] {}",
+                    v["source"].as_str().unwrap_or(""),
+                    v["msg"].as_str().unwrap_or("")
+                ),
+                kind => {
+                    let fields = v
+                        .as_object()
+                        .map(|o| {
+                            o.iter()
+                                .filter(|(k, _)| *k != "kind" && *k != "ts")
+                                .map(|(k, val)| format!("{k}={val}"))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        })
+                        .unwrap_or_default();
+                    println!("{kind}: {fields}");
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn default_image(cfg: &config::Config) -> String {

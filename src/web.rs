@@ -191,7 +191,12 @@ async fn rate(State(app): State<Arc<App>>) -> impl IntoResponse {
 
 async fn events(State(app): State<Arc<App>>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = app.change_tx.subscribe();
-    let stream = BroadcastStream::new(rx).map(|_| Ok(Event::default().data("changed")));
+    let stream = BroadcastStream::new(rx).map(|msg| {
+        let payload = msg
+            .map(|v| v.to_string())
+            .unwrap_or_else(|_| r#"{"kind":"lagged"}"#.to_string());
+        Ok(Event::default().data(payload))
+    });
     Sse::new(stream)
 }
 

@@ -61,6 +61,7 @@ Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 | `why [job] [--json]` | failure digest: what ran, log excerpt around the error |
 | `logs [job]` | full captured step logs (`latest`, `latest-failed`, or an id) |
 | `exec [job]` | shell inside a kept failed-job workspace |
+| `events [--json]` | follow the live event stream (`job_started`, `job_result`, `burst`, …; NDJSON with `--json`) |
 | `mcp` | MCP server over stdio: `claude mcp add homerunner -- homerunner mcp` |
 | `doctor` | check token, runtime, image, repo access |
 | `init` / `install` / `build-image` | one-time setup, launchd agent, image rebuild |

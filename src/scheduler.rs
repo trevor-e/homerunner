@@ -75,7 +75,10 @@ pub struct App {
     pub runners: Mutex<HashMap<String, RunnerInfo>>,
     pub degraded: Mutex<HashMap<String, String>>,
     backoff: Mutex<HashMap<String, u32>>,
-    pub change_tx: broadcast::Sender<()>,
+    /// Structured event feed: every message is a JSON object with at least
+    /// {ts, kind}. The dashboard treats any message as "refetch"; agents can
+    /// consume the payloads (`homerunner events --json`).
+    pub change_tx: broadcast::Sender<Value>,
     caffeinate: Mutex<Option<tokio::process::Child>>,
     /// Reap outcomes for jobs whose id enrichment hadn't resolved yet,
     /// keyed by runner name; applied (and drained) when enrichment lands.
@@ -100,7 +103,17 @@ impl App {
     pub fn log(&self, level: &str, source: &str, msg: &str) {
         println!("[{source}] {msg}");
         self.store.lock().unwrap().event(level, source, msg);
-        let _ = self.change_tx.send(());
+        let _ = self.change_tx.send(json!({
+            "ts": now(), "kind": "log", "level": level, "source": source, "msg": msg,
+        }));
+    }
+
+    /// Emit a typed event for agent consumers. Live-stream only — the
+    /// adjacent log() call already journals the human-readable line.
+    pub fn emit(&self, kind: &str, mut data: Value) {
+        data["ts"] = json!(now());
+        data["kind"] = json!(kind);
+        let _ = self.change_tx.send(data);
     }
 
     fn live_count(&self, repo: Option<&str>) -> u32 {
@@ -255,6 +268,7 @@ async fn burst_poller(app: Arc<App>) {
                     "burst",
                     &format!("{}: {queued} queued job(s), scaling up", repo_cfg.repo),
                 );
+                app.emit("burst", json!({"repo": repo_cfg.repo, "queued": queued}));
                 spawn_runner(&app, repo_cfg).await;
             }
         }
@@ -292,7 +306,7 @@ async fn stats_sampler(app: Arc<App>) {
             }
         }
         if changed {
-            let _ = app.change_tx.send(());
+            app.emit("stats", json!({}));
         }
     }
 }
@@ -483,6 +497,10 @@ async fn spawn_runner(app: &Arc<App>, repo_cfg: &RepoConfig) {
                 "spawn",
                 &format!("{name} listening for {}", repo_cfg.repo),
             );
+            app.emit(
+                "runner_listening",
+                json!({"runner": name, "repo": repo_cfg.repo}),
+            );
         }
         Err(err) => {
             info.state = RunnerState::Failed;
@@ -590,6 +608,10 @@ async fn watch_exit(
                         "keep",
                         &format!("kept failed workspace as {tag} (homerunner exec {key})"),
                     );
+                    app.emit(
+                        "workspace_kept",
+                        json!({"runner": name, "image": tag, "job": key}),
+                    );
                 }
                 Err(e) => app.log(
                     "warn",
@@ -655,6 +677,19 @@ async fn watch_exit(
             60u64.min(2u64.pow((*entry).min(6)))
         }
     };
+    app.emit(
+        "runner_reaped",
+        json!({
+            "runner": name,
+            "repo": repo_cfg.repo,
+            "exit_code": code,
+            "ran_job": ran_job,
+            "conclusion": info.job["conclusion"],
+            "job_id": job_id,
+            "decayed": info.decaying,
+            "oom": oom,
+        }),
+    );
     if ran_job {
         app.log(
             "info",
@@ -730,6 +765,13 @@ async fn watch_logs(
         }
         if became_busy {
             app.update_caffeinate();
+            app.emit(
+                "job_started",
+                json!({
+                    "runner": name,
+                    "job_name": app.runners.lock().unwrap().get(&name).map(|i| i.job["job_name"].clone()),
+                }),
+            );
             app.log(
                 "info",
                 "job",
@@ -744,7 +786,10 @@ async fn watch_logs(
         }
         if let Some((job_id, conclusion)) = concluded {
             app.store.lock().unwrap().job_concluded(job_id, &conclusion);
-            let _ = app.change_tx.send(());
+            app.emit(
+                "job_result",
+                json!({"runner": name, "job_id": job_id, "conclusion": conclusion}),
+            );
         }
     }
 }
@@ -814,7 +859,16 @@ async fn enrich_job(app: Arc<App>, name: String) {
                         }
                     }
                 }
-                let _ = app.change_tx.send(());
+                app.emit(
+                    "job_enriched",
+                    json!({
+                        "runner": name,
+                        "job_id": job_id,
+                        "job_name": found["job_name"],
+                        "html_url": found["html_url"],
+                        "head_sha": found["head_sha"],
+                    }),
+                );
                 return;
             }
         }
@@ -941,6 +995,7 @@ async fn watchdog(app: Arc<App>) {
                 "decay",
                 &format!("{name} idle beyond reserved; scaling down"),
             );
+            app.emit("decay", json!({"runner": name}));
             kind.kill(&container_id).await;
         }
         if ts - last_release_check > 86_400.0 {

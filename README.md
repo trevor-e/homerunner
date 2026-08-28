@@ -27,9 +27,10 @@ a local runner beats hosted speed.
 brew install gh && gh auth login       # token needs repo scope (or fine-grained: Actions read + Administration read/write)
 scripts/build-image.sh                 # build homerunner-runner:local (Docker Desktop must be running)
 cp config.example.toml ~/.config/homerunner/config.toml   # then edit repos
-uv run homerunner doctor               # verify token, runtime, image, repo access
-uv run homerunner run                  # foreground; dashboard at http://127.0.0.1:8123
-uv run homerunner install             # or: launchd agent, starts at login
+cargo build --release                  # single static binary: target/release/homerunner
+target/release/homerunner doctor       # verify token, runtime, image, repo access
+target/release/homerunner run          # foreground; dashboard at http://127.0.0.1:8123
+target/release/homerunner install      # or: launchd agent, starts at login
 ```
 
 Then flip workflows to `runs-on: [self-hosted, linux, x64]` (self-hosted

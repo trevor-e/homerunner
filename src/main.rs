@@ -54,8 +54,15 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Open a shell inside a kept failed-job workspace
-    Exec { job: Option<String> },
+    /// Open a shell inside a kept failed-job workspace, or run one command
+    /// in it: `exec [job] -- <cmd>...`
+    Exec {
+        job: Option<String>,
+        /// Command to run non-interactively (no TTY needed); default is an
+        /// interactive shell
+        #[arg(last = true)]
+        cmd: Vec<String>,
+    },
     /// Follow the live event stream (typed JSON with --json, NDJSON)
     Events {
         #[arg(long)]
@@ -133,16 +140,25 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Exec { job } => {
+        Cmd::Exec { job, cmd } => {
             let store = store::Store::open_readonly(&cfg.db_path())?;
             let job = agent::resolve_job(&store, job.as_deref(), true)?;
             let image = job["kept_image"].as_str().context(
                 "no kept workspace for this job (only failed jobs are kept, per keep_failed_workspaces)",
             )?;
             use std::os::unix::process::CommandExt;
-            let err = StdCommand::new("docker")
-                .args(["run", "-it", "--rm", image])
-                .exec();
+            let mut docker = StdCommand::new("docker");
+            docker.args(["run", "--rm"]);
+            match cmd.split_first() {
+                // Kept images carry ENTRYPOINT /bin/bash — bare `run -it` is a shell.
+                None => {
+                    docker.args(["-it", image]);
+                }
+                Some((prog, rest)) => {
+                    docker.args(["--entrypoint", prog, image]).args(rest);
+                }
+            }
+            let err = docker.exec();
             anyhow::bail!("docker run failed: {err}")
         }
         Cmd::Events { json } => events_cli(cfg, json).await,

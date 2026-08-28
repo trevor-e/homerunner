@@ -16,6 +16,9 @@ Three things make it more than a quota workaround:
   the log excerpt around the error, whether the workspace was kept), every
   query takes `--json`, and `homerunner mcp` serves the same queries as MCP
   tools — so a coding agent can debug CI without touching GitHub's API.
+  [`skills/homerunner`](skills/homerunner/SKILL.md) packages the debugging
+  workflow as an agent skill: symlink it into `~/.claude/skills/`, or
+  `npx skills add trevor-e/homerunner --skill homerunner`.
 - **VM-per-job isolation** via [apple/container](https://github.com/apple/container)
   on Apple Silicon (not yet verified on hardware:
   [docs/arm64-verification.md](docs/arm64-verification.md)), with a
@@ -60,7 +63,7 @@ Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 | `jobs [--json]` | job history, with log/workspace availability |
 | `why [job] [--json]` | failure digest: what ran, log excerpt around the error |
 | `logs [job]` | full captured step logs (`latest`, `latest-failed`, or an id) |
-| `exec [job]` | shell inside a kept failed-job workspace |
+| `exec [job] [-- cmd]` | shell inside a kept failed-job workspace; `-- cmd` runs one command, no TTY (for agents/scripts) |
 | `events [--json]` | follow the live event stream (`job_started`, `job_result`, `burst`, …; NDJSON with `--json`) |
 | `mcp` | MCP server over stdio: `claude mcp add homerunner -- homerunner mcp` |
 | `doctor` | check token, runtime, image, repo access |

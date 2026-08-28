@@ -80,7 +80,7 @@ pub fn why(store: &Store, spec: Option<&str>) -> Result<Value> {
     Ok(json!({
         "job": job,
         "excerpt": excerpt,
-        "post_mortem": job["kept_image"].as_str().map(|_| format!("workspace kept — `homerunner exec {key}` opens a shell in it")),
+        "post_mortem": job["kept_image"].as_str().map(|_| format!("workspace kept — `homerunner exec {key}` opens a shell in it; `homerunner exec {key} -- <cmd>` runs one command without a TTY")),
     }))
 }
 

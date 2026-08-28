@@ -223,7 +223,7 @@ async function refresh() {
     <tr>
       <td>${j.conclusion ? pill(j.conclusion) : pill("busy")}</td>
       <td class="dim shrink">${esc(j.repo)}</td>
-      <td class="shrink" title="${esc(j.title || "")}">${j.head_sha ? `<span class="mono dim">${esc(j.head_sha.slice(0, 7))}</span> ${esc(j.title || "")}` : ""}</td>
+      <td class="shrink" title="${esc(j.title || "")}">${j.head_sha ? `<span class="mono dim">${esc(j.head_sha.slice(0, 7))}</span> ${esc(j.title && j.title !== j.workflow ? j.title : "")}` : ""}</td>
       <td class="shrink">${esc(j.workflow || "")}</td>
       <td class="shrink">${j.html_url ? `<a href="${esc(j.html_url)}" target="_blank" rel="noopener">${esc(j.job_name)}</a>` : esc(j.job_name)}</td>
       <td class="dim num">${j.started_at && j.completed_at ? age(j.completed_at - j.started_at) : ""}</td>

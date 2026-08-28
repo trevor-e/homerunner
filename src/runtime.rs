@@ -17,7 +17,10 @@ pub const RUNNER_LABEL: &str = "homerunner.runner";
 
 pub const CACHE_VOLUMES: &[(&str, &str)] = &[
     ("homerunner-home-cache", "/home/runner/.cache"),
-    ("homerunner-pnpm-store", "/home/runner/.local/share/pnpm/store"),
+    (
+        "homerunner-pnpm-store",
+        "/home/runner/.local/share/pnpm/store",
+    ),
 ];
 
 #[derive(Debug, Clone)]
@@ -50,6 +53,20 @@ async fn run(argv: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// "1.5GiB", "512MiB", "3.2MB" -> bytes (docker stats human units).
+fn parse_mem_bytes(s: &str) -> u64 {
+    let s = s.trim();
+    let split = s.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(s.len());
+    let value: f64 = s[..split].parse().unwrap_or(0.0);
+    let mult = match s[split..].trim() {
+        "KiB" | "kB" | "KB" => 1024.0,
+        "MiB" | "MB" => 1024.0 * 1024.0,
+        "GiB" | "GB" => 1024.0 * 1024.0 * 1024.0,
+        _ => 1.0,
+    };
+    (value * mult) as u64
 }
 
 async fn run_unchecked(argv: &[&str]) {
@@ -90,17 +107,21 @@ fn stream_logs(mut cmd: Command) -> Result<mpsc::Receiver<String>> {
 impl RuntimeKind {
     pub async fn available(self) -> Option<String> {
         match self {
-            RuntimeKind::Docker => match run(&["docker", "info", "--format", "{{.ServerVersion}}"]).await {
-                Ok(_) => None,
-                Err(e) => Some(format!("docker daemon unreachable: {e}")),
-            },
+            RuntimeKind::Docker => {
+                match run(&["docker", "info", "--format", "{{.ServerVersion}}"]).await {
+                    Ok(_) => None,
+                    Err(e) => Some(format!("docker daemon unreachable: {e}")),
+                }
+            }
             RuntimeKind::AppleContainer => {
                 if std::env::consts::ARCH != "aarch64" {
                     return Some("apple/container requires an Apple Silicon Mac".into());
                 }
                 match run(&["container", "system", "status"]).await {
                     Ok(_) => None,
-                    Err(e) => Some(format!("container system not running (`container system start`): {e}")),
+                    Err(e) => Some(format!(
+                        "container system not running (`container system start`): {e}"
+                    )),
                 }
             }
         }
@@ -179,9 +200,13 @@ impl RuntimeKind {
         match self {
             RuntimeKind::Docker => {
                 let out = run(&[
-                    "docker", "ps", "-a",
-                    "--filter", &format!("label={MANAGED_LABEL}=true"),
-                    "--format", "{{json .}}",
+                    "docker",
+                    "ps",
+                    "-a",
+                    "--filter",
+                    &format!("label={MANAGED_LABEL}=true"),
+                    "--format",
+                    "{{json .}}",
                 ])
                 .await?;
                 let mut containers = Vec::new();
@@ -209,13 +234,67 @@ impl RuntimeKind {
                     .filter(|row| row["labels"][MANAGED_LABEL].as_str() == Some("true"))
                     .map(|row| ManagedContainer {
                         container_id: row["id"].as_str().unwrap_or_default().into(),
-                        runner_name: row["labels"][RUNNER_LABEL].as_str().unwrap_or_default().into(),
-                        repo: row["labels"][REPO_LABEL].as_str().unwrap_or_default().into(),
+                        runner_name: row["labels"][RUNNER_LABEL]
+                            .as_str()
+                            .unwrap_or_default()
+                            .into(),
+                        repo: row["labels"][REPO_LABEL]
+                            .as_str()
+                            .unwrap_or_default()
+                            .into(),
                         running: row["status"].as_str() == Some("running"),
                     })
                     .collect())
             }
         }
+    }
+
+    /// One-shot CPU/memory sample for the given containers, keyed by name.
+    /// Values: (cpu_percent, mem_bytes). Best-effort — errors return empty.
+    pub async fn stats(self, names: &[String]) -> std::collections::HashMap<String, (f64, u64)> {
+        let mut out = std::collections::HashMap::new();
+        if names.is_empty() || self != RuntimeKind::Docker {
+            return out; // `container stats` shape unverified on apple/container
+        }
+        let mut argv: Vec<&str> = vec!["docker", "stats", "--no-stream", "--format", "{{json .}}"];
+        argv.extend(names.iter().map(String::as_str));
+        let Ok(text) = run(&argv).await else {
+            return out;
+        };
+        for line in text.lines() {
+            let Ok(row) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let name = row["Name"].as_str().unwrap_or_default().to_string();
+            let cpu = row["CPUPerc"]
+                .as_str()
+                .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
+                .unwrap_or(0.0);
+            let mem = row["MemUsage"]
+                .as_str()
+                .and_then(|s| s.split('/').next())
+                .map(parse_mem_bytes)
+                .unwrap_or(0);
+            out.insert(name, (cpu, mem));
+        }
+        out
+    }
+
+    /// Whether the kernel OOM-killed the container (docker only).
+    pub async fn oom_killed(self, container_id: &str) -> bool {
+        if self != RuntimeKind::Docker {
+            return false;
+        }
+        run(&[
+            "docker",
+            "inspect",
+            "--format",
+            "{{.State.OOMKilled}}",
+            container_id,
+        ])
+        .await
+        .map(|s| s.trim() == "true")
+        .unwrap_or(false)
     }
 
     /// Copy a path out of a (possibly exited) container to the host.
@@ -231,16 +310,22 @@ impl RuntimeKind {
         match self {
             RuntimeKind::Docker => {
                 run(&[
-                    "docker", "commit",
-                    "-c", "LABEL homerunner.kept=true",
-                    "-c", r#"ENTRYPOINT ["/bin/bash"]"#,
-                    container_id, tag,
+                    "docker",
+                    "commit",
+                    "-c",
+                    "LABEL homerunner.kept=true",
+                    "-c",
+                    r#"ENTRYPOINT ["/bin/bash"]"#,
+                    container_id,
+                    tag,
                 ])
                 .await?;
                 Ok(())
             }
             // No commit equivalent confirmed for apple/container yet.
-            RuntimeKind::AppleContainer => bail!("kept workspaces not supported on apple-container yet"),
+            RuntimeKind::AppleContainer => {
+                bail!("kept workspaces not supported on apple-container yet")
+            }
         }
     }
 
@@ -256,7 +341,9 @@ impl RuntimeKind {
         match self {
             // -v: drop the anonymous /var/lib/docker volume from the inner daemon.
             RuntimeKind::Docker => run_unchecked(&["docker", "rm", "-f", "-v", container_id]).await,
-            RuntimeKind::AppleContainer => run_unchecked(&["container", "rm", "-f", container_id]).await,
+            RuntimeKind::AppleContainer => {
+                run_unchecked(&["container", "rm", "-f", container_id]).await
+            }
         }
     }
 }

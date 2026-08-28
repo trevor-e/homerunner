@@ -15,7 +15,11 @@ use std::process::Command as StdCommand;
 const PLIST_LABEL: &str = "dev.highstorm.homerunner";
 
 #[derive(Parser)]
-#[command(name = "homerunner", version, about = "Warm pool of ephemeral self-hosted GitHub Actions runners")]
+#[command(
+    name = "homerunner",
+    version,
+    about = "Warm pool of ephemeral self-hosted GitHub Actions runners"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Cmd,
@@ -93,7 +97,10 @@ async fn main() -> Result<()> {
         Cmd::Doctor => doctor(cfg).await,
         Cmd::BuildImage => build_image(
             &default_image(&cfg),
-            cfg.repos.first().map(|rc| rc.runtime).unwrap_or(config::RuntimeKind::Docker),
+            cfg.repos
+                .first()
+                .map(|rc| rc.runtime)
+                .unwrap_or(config::RuntimeKind::Docker),
         ),
         Cmd::Jobs { json, limit } => {
             let store = store::Store::open_readonly(&cfg.db_path())?;
@@ -128,7 +135,9 @@ async fn main() -> Result<()> {
                 "no kept workspace for this job (only failed jobs are kept, per keep_failed_workspaces)",
             )?;
             use std::os::unix::process::CommandExt;
-            let err = StdCommand::new("docker").args(["run", "-it", "--rm", image]).exec();
+            let err = StdCommand::new("docker")
+                .args(["run", "-it", "--rm", image])
+                .exec();
             anyhow::bail!("docker run failed: {err}")
         }
         Cmd::Mcp => mcp::serve(cfg).await,
@@ -166,8 +175,14 @@ fn build_image(image: &str, runtime: config::RuntimeKind) -> Result<()> {
     };
     let dir = std::env::temp_dir().join(format!("homerunner-image-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("Dockerfile"), include_str!("../images/runner/Dockerfile"))?;
-    std::fs::write(dir.join("entrypoint.sh"), include_str!("../images/runner/entrypoint.sh"))?;
+    std::fs::write(
+        dir.join("Dockerfile"),
+        include_str!("../images/runner/Dockerfile"),
+    )?;
+    std::fs::write(
+        dir.join("entrypoint.sh"),
+        include_str!("../images/runner/entrypoint.sh"),
+    )?;
     println!("building {image} via `{builder} build` (first build downloads the base image; takes a few minutes)");
     let status = StdCommand::new(builder)
         .args(["build", "-t", image, "."])
@@ -181,7 +196,10 @@ fn build_image(image: &str, runtime: config::RuntimeKind) -> Result<()> {
 
 async fn init(path: &std::path::Path, repos: &[String], rebuild: bool) -> Result<()> {
     if path.exists() {
-        println!("config: {} (already exists, leaving it alone)", path.display());
+        println!(
+            "config: {} (already exists, leaving it alone)",
+            path.display()
+        );
     } else {
         anyhow::ensure!(
             !repos.is_empty(),
@@ -211,7 +229,11 @@ async fn init(path: &std::path::Path, repos: &[String], rebuild: bool) -> Result
 
     let cfg = config::load(path)?;
     let image = default_image(&cfg);
-    let runtime = cfg.repos.first().map(|rc| rc.runtime).unwrap_or(config::RuntimeKind::Docker);
+    let runtime = cfg
+        .repos
+        .first()
+        .map(|rc| rc.runtime)
+        .unwrap_or(config::RuntimeKind::Docker);
     if rebuild || !image_exists(&image, runtime) {
         build_image(&image, runtime)?;
     } else {
@@ -219,7 +241,9 @@ async fn init(path: &std::path::Path, repos: &[String], rebuild: bool) -> Result
     }
 
     doctor(cfg).await?;
-    println!("\nready — `homerunner install` for the launchd agent, or `homerunner run` for foreground");
+    println!(
+        "\nready — `homerunner install` for the launchd agent, or `homerunner run` for foreground"
+    );
     Ok(())
 }
 
@@ -233,7 +257,9 @@ async fn run(cfg: config::Config) -> Result<()> {
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
-        .with_context(|| format!("dashboard port {port} unavailable (another supervisor running?)"))?;
+        .with_context(|| {
+            format!("dashboard port {port} unavailable (another supervisor running?)")
+        })?;
     println!("[web] dashboard on http://127.0.0.1:{port}");
     axum::serve(listener, web::router(app)).await?;
     Ok(())
@@ -262,8 +288,17 @@ async fn status(cfg: config::Config) -> Result<()> {
     }
     for r in data["runners"].as_array().into_iter().flatten() {
         let job = r["job"]["job_name"].as_str().unwrap_or("");
-        let suffix = if job.is_empty() { String::new() } else { format!("  {job}") };
-        println!("  {}  {}{}", r["name"].as_str().unwrap_or("?"), r["state"].as_str().unwrap_or("?"), suffix);
+        let suffix = if job.is_empty() {
+            String::new()
+        } else {
+            format!("  {job}")
+        };
+        println!(
+            "  {}  {}{}",
+            r["name"].as_str().unwrap_or("?"),
+            r["state"].as_str().unwrap_or("?"),
+            suffix
+        );
     }
     if let Some(degraded) = data["degraded"].as_object() {
         for (name, reason) in degraded {
@@ -291,10 +326,17 @@ async fn doctor(cfg: config::Config) -> Result<()> {
     let github = github::GitHub::new(&cfg.auth_source);
     match github.rate_limit().await {
         Ok(core) => {
-            println!("github token: ok ({}/{} requests remaining)", core["remaining"], core["limit"]);
+            println!(
+                "github token: ok ({}/{} requests remaining)",
+                core["remaining"], core["limit"]
+            );
             for rc in &cfg.repos {
                 match github.list_runners(&rc.repo).await {
-                    Ok(runners) => println!("repo {}: ok ({} registered runner(s))", rc.repo, runners.len()),
+                    Ok(runners) => println!(
+                        "repo {}: ok ({} registered runner(s))",
+                        rc.repo,
+                        runners.len()
+                    ),
                     Err(e) => {
                         println!("repo {}: FAIL {e}", rc.repo);
                         ok = false;
@@ -321,7 +363,14 @@ async fn doctor(cfg: config::Config) -> Result<()> {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
-        println!("image {image}: {}", if found { "ok" } else { "MISSING (homerunner build-image)" });
+        println!(
+            "image {image}: {}",
+            if found {
+                "ok"
+            } else {
+                "MISSING (homerunner build-image)"
+            }
+        );
         ok = ok && found;
     }
 
@@ -372,7 +421,11 @@ fn install(config_path: &std::path::Path) -> Result<()> {
         .args(["bootout", &format!("gui/{uid}/{PLIST_LABEL}")])
         .output();
     let status = StdCommand::new("launchctl")
-        .args(["bootstrap", &format!("gui/{uid}"), &plist_path.to_string_lossy()])
+        .args([
+            "bootstrap",
+            &format!("gui/{uid}"),
+            &plist_path.to_string_lossy(),
+        ])
         .status()?;
     anyhow::ensure!(status.success(), "launchctl bootstrap failed");
     println!("installed + started {PLIST_LABEL}");

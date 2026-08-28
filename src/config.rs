@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeKind {
     Docker,
@@ -116,7 +116,10 @@ pub fn load(path: &Path) -> Result<Config> {
     let mut repos = Vec::new();
     for entry in &raw.repos {
         if !entry.repo.contains('/') {
-            bail!("[[repos]] entry needs repo = \"owner/name\", got: {}", entry.repo);
+            bail!(
+                "[[repos]] entry needs repo = \"owner/name\", got: {}",
+                entry.repo
+            );
         }
         let o = &entry.overrides;
         repos.push(RepoConfig {
@@ -126,9 +129,7 @@ pub fn load(path: &Path) -> Result<Config> {
                 .labels
                 .clone()
                 .or_else(|| d.labels.clone())
-                .unwrap_or_else(|| {
-                    vec!["self-hosted".into(), "linux".into(), "x64".into()]
-                }),
+                .unwrap_or_else(|| vec!["self-hosted".into(), "linux".into(), "x64".into()]),
             image: o
                 .image
                 .clone()
@@ -137,7 +138,10 @@ pub fn load(path: &Path) -> Result<Config> {
             pool_size: o.pool_size.or(d.pool_size).unwrap_or(1),
             job_timeout_min: o.job_timeout_min.or(d.job_timeout_min).unwrap_or(120),
             caffeinate: o.caffeinate.or(d.caffeinate).unwrap_or(true),
-            registry_mirror: o.registry_mirror.clone().or_else(|| d.registry_mirror.clone()),
+            registry_mirror: o
+                .registry_mirror
+                .clone()
+                .or_else(|| d.registry_mirror.clone()),
         });
     }
     if repos.is_empty() {

@@ -22,7 +22,9 @@ pub fn resolve_job(store: &Store, spec: Option<&str>, default_failed: bool) -> R
             let id: i64 = s
                 .parse()
                 .context("job must be a numeric id, 'latest', or 'latest-failed'")?;
-            store.job(id).with_context(|| format!("no job {id} recorded"))
+            store
+                .job(id)
+                .with_context(|| format!("no job {id} recorded"))
         }
     }
 }
@@ -92,6 +94,25 @@ pub fn why_text(digest: &Value) -> String {
         job["conclusion"].as_str().unwrap_or("unknown"),
         job["html_url"].as_str().unwrap_or(""),
     );
+    if let Some(sha) = job["head_sha"].as_str() {
+        out.push_str(&format!(
+            "{} @ {} ({}) — {}\n",
+            job["head_branch"].as_str().unwrap_or("?"),
+            &sha[..sha.len().min(9)],
+            job["event"].as_str().unwrap_or("?"),
+            job["title"].as_str().unwrap_or(""),
+        ));
+    }
+    if let Some(peak) = job["peak_mem_mb"].as_f64() {
+        out.push_str(&format!(
+            "peak memory: {peak:.0} MB{}\n",
+            if job["oom"].as_bool() == Some(true) {
+                " — OOM-KILLED"
+            } else {
+                ""
+            }
+        ));
+    }
     if let Some(pm) = digest["post_mortem"].as_str() {
         out.push_str(pm);
         out.push('\n');
@@ -116,13 +137,20 @@ pub fn jobs_table(jobs: &[Value]) -> String {
         };
         out.push_str(&format!(
             "{:<12} {:<9} {:<28} {:<24} {:>6}  {}{}\n",
-            j["gh_job_id"].as_i64().map(|i| i.to_string()).unwrap_or_default(),
+            j["gh_job_id"]
+                .as_i64()
+                .map(|i| i.to_string())
+                .unwrap_or_default(),
             j["conclusion"].as_str().unwrap_or("running"),
             j["repo"].as_str().unwrap_or(""),
             j["job_name"].as_str().unwrap_or(""),
             dur,
             if j["log_dir"].is_string() { "logs" } else { "" },
-            if j["kept_image"].is_string() { "+workspace" } else { "" },
+            if j["kept_image"].is_string() {
+                "+workspace"
+            } else {
+                ""
+            },
         ));
     }
     if out.is_empty() {

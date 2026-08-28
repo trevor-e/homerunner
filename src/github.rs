@@ -22,7 +22,10 @@ async fn resolve_token(source: &str) -> Result<String> {
             .await
             .context("failed to run `gh auth token`")?;
         if !out.status.success() {
-            bail!("`gh auth token` failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+            bail!(
+                "`gh auth token` failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
         }
         return Ok(String::from_utf8_lossy(&out.stdout).trim().to_string());
     }
@@ -56,7 +59,12 @@ impl GitHub {
         Ok(guard.clone().unwrap())
     }
 
-    async fn request(&self, method: reqwest::Method, url: &str, body: Option<Value>) -> Result<Value> {
+    async fn request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        body: Option<Value>,
+    ) -> Result<Value> {
         for attempt in 0..2 {
             let token = self.token().await?;
             let mut req = self
@@ -113,12 +121,16 @@ impl GitHub {
             )
             .await?;
         let id = body["runner"]["id"].as_i64().context("no runner id")?;
-        let cfg = body["encoded_jit_config"].as_str().context("no jit config")?;
+        let cfg = body["encoded_jit_config"]
+            .as_str()
+            .context("no jit config")?;
         Ok((id, cfg.to_string()))
     }
 
     pub async fn list_runners(&self, repo: &str) -> Result<Vec<Value>> {
-        let body = self.get(&format!("/repos/{repo}/actions/runners?per_page=100")).await?;
+        let body = self
+            .get(&format!("/repos/{repo}/actions/runners?per_page=100"))
+            .await?;
         Ok(body["runners"].as_array().cloned().unwrap_or_default())
     }
 
@@ -132,26 +144,37 @@ impl GitHub {
         Ok(())
     }
 
-    /// Dashboard enrichment after a runner turns busy: find the in-progress
-    /// job assigned to it. One runs listing + its job listings; best-effort.
+    /// Job enrichment after a runner turns busy: find the job assigned to it.
+    /// Checks in-progress runs first, then recently-completed ones — a short
+    /// job can finish before the API ever showed its run as in_progress.
     pub async fn find_job_by_runner(&self, repo: &str, runner_name: &str) -> Result<Option<Value>> {
-        let runs = self
-            .get(&format!("/repos/{repo}/actions/runs?status=in_progress&per_page=10"))
-            .await?;
-        for run in runs["workflow_runs"].as_array().into_iter().flatten() {
-            let run_id = run["id"].as_i64().unwrap_or_default();
-            let jobs = self
-                .get(&format!("/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"))
+        for status in ["in_progress", "completed"] {
+            let runs = self
+                .get(&format!(
+                    "/repos/{repo}/actions/runs?status={status}&per_page=8"
+                ))
                 .await?;
-            for job in jobs["jobs"].as_array().into_iter().flatten() {
-                if job["runner_name"].as_str() == Some(runner_name) {
-                    return Ok(Some(json!({
-                        "job_id": job["id"],
-                        "run_id": run_id,
-                        "workflow": run["name"],
-                        "job_name": job["name"],
-                        "html_url": job["html_url"],
-                    })));
+            for run in runs["workflow_runs"].as_array().into_iter().flatten() {
+                let run_id = run["id"].as_i64().unwrap_or_default();
+                let jobs = self
+                    .get(&format!(
+                        "/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"
+                    ))
+                    .await?;
+                for job in jobs["jobs"].as_array().into_iter().flatten() {
+                    if job["runner_name"].as_str() == Some(runner_name) {
+                        return Ok(Some(json!({
+                            "job_id": job["id"],
+                            "run_id": run_id,
+                            "workflow": run["name"],
+                            "job_name": job["name"],
+                            "html_url": job["html_url"],
+                            "head_branch": run["head_branch"],
+                            "head_sha": run["head_sha"],
+                            "title": run["display_title"],
+                            "event": run["event"],
+                        })));
+                    }
                 }
             }
         }

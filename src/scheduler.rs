@@ -58,6 +58,9 @@ pub struct RunnerInfo {
     pub ran_job: bool,
     pub job: Value, // {job_name, job_id, run_id, workflow, html_url, conclusion}
     pub log_tail: VecDeque<String>,
+    pub cpu_pct: f64,
+    pub mem_bytes: u64,
+    pub peak_mem_bytes: u64,
 }
 
 pub struct App {
@@ -69,6 +72,9 @@ pub struct App {
     backoff: Mutex<HashMap<String, u32>>,
     pub change_tx: broadcast::Sender<()>,
     caffeinate: Mutex<Option<tokio::process::Child>>,
+    /// Reap outcomes for jobs whose id enrichment hadn't resolved yet,
+    /// keyed by runner name; applied (and drained) when enrichment lands.
+    pending_outcomes: Mutex<HashMap<String, Value>>,
 }
 
 impl App {
@@ -82,6 +88,7 @@ impl App {
             backoff: Mutex::new(HashMap::new()),
             change_tx: broadcast::channel(64).0,
             caffeinate: Mutex::new(None),
+            pending_outcomes: Mutex::new(HashMap::new()),
         })
     }
 
@@ -159,6 +166,8 @@ impl App {
                     "busy_at": r.busy_at,
                     "job": r.job,
                     "log_tail": r.log_tail.iter().rev().take(8).rev().collect::<Vec<_>>(),
+                    "cpu_pct": r.cpu_pct,
+                    "mem_bytes": r.mem_bytes,
                 })).collect::<Vec<_>>(),
         })
     }
@@ -174,7 +183,44 @@ pub async fn start(app: Arc<App>) {
         top_up(&app, &repo_cfg).await;
     }
     tokio::spawn(watchdog(app.clone()));
+    tokio::spawn(stats_sampler(app.clone()));
     app.log("info", "scheduler", "started");
+}
+
+/// Sample per-runner CPU/memory every 15s while runners are live; keep the
+/// live values for the dashboard and the per-runner peak for the job journal.
+async fn stats_sampler(app: Arc<App>) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        let by_kind: std::collections::HashMap<crate::config::RuntimeKind, Vec<String>> = {
+            let runners = app.runners.lock().unwrap();
+            let mut m: std::collections::HashMap<_, Vec<String>> = std::collections::HashMap::new();
+            for (name, info) in runners.iter() {
+                if info.state.live() {
+                    m.entry(info.repo_cfg.runtime)
+                        .or_default()
+                        .push(name.clone());
+                }
+            }
+            m
+        };
+        let mut changed = false;
+        for (kind, names) in by_kind {
+            let samples = kind.stats(&names).await;
+            let mut runners = app.runners.lock().unwrap();
+            for (name, (cpu, mem)) in samples {
+                if let Some(info) = runners.get_mut(&name) {
+                    info.cpu_pct = cpu;
+                    info.mem_bytes = mem;
+                    info.peak_mem_bytes = info.peak_mem_bytes.max(mem);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let _ = app.change_tx.send(());
+        }
+    }
 }
 
 async fn check_runtimes(app: &Arc<App>) {
@@ -186,8 +232,15 @@ async fn check_runtimes(app: &Arc<App>) {
     for kind in kinds {
         match kind.available().await {
             Some(reason) => {
-                app.log("warn", "runtime", &format!("{} degraded: {reason}", kind.name()));
-                app.degraded.lock().unwrap().insert(kind.name().into(), reason);
+                app.log(
+                    "warn",
+                    "runtime",
+                    &format!("{} degraded: {reason}", kind.name()),
+                );
+                app.degraded
+                    .lock()
+                    .unwrap()
+                    .insert(kind.name().into(), reason);
             }
             None => {
                 app.degraded.lock().unwrap().remove(kind.name());
@@ -229,14 +282,25 @@ async fn adopt_orphans(app: &Arc<App>) {
                             ran_job: false,
                             job: json!({}),
                             log_tail: VecDeque::new(),
+                            cpu_pct: 0.0,
+                            mem_bytes: 0,
+                            peak_mem_bytes: 0,
                         },
                     );
                     start_watchers(app, &mc.runner_name, kind, &mc.container_id);
-                    app.log("info", "recover", &format!("re-adopted running runner {}", mc.runner_name));
+                    app.log(
+                        "info",
+                        "recover",
+                        &format!("re-adopted running runner {}", mc.runner_name),
+                    );
                 }
                 _ => {
                     kind.remove(&mc.container_id).await;
-                    app.log("info", "recover", &format!("reaped stale container {}", mc.runner_name));
+                    app.log(
+                        "info",
+                        "recover",
+                        &format!("reaped stale container {}", mc.runner_name),
+                    );
                 }
             }
         }
@@ -247,7 +311,11 @@ async fn adopt_orphans(app: &Arc<App>) {
 async fn sweep_registrations(app: &Arc<App>) {
     for repo_cfg in &app.config.repos {
         let Ok(registrations) = app.github.list_runners(&repo_cfg.repo).await else {
-            app.log("warn", "recover", &format!("registration sweep failed for {}", repo_cfg.repo));
+            app.log(
+                "warn",
+                "recover",
+                &format!("registration sweep failed for {}", repo_cfg.repo),
+            );
             continue;
         };
         let prefix = format!("hr-{}-", repo_cfg.slug());
@@ -257,7 +325,11 @@ async fn sweep_registrations(app: &Arc<App>) {
             if name.starts_with(&prefix) && reg["status"].as_str() == Some("offline") && !live {
                 if let Some(id) = reg["id"].as_i64() {
                     if app.github.delete_runner(&repo_cfg.repo, id).await.is_ok() {
-                        app.log("info", "recover", &format!("deleted orphan registration {name}"));
+                        app.log(
+                            "info",
+                            "recover",
+                            &format!("deleted orphan registration {name}"),
+                        );
                     }
                 }
             }
@@ -268,7 +340,12 @@ async fn sweep_registrations(app: &Arc<App>) {
 // -- pool management ---------------------------------------------------------
 
 async fn top_up(app: &Arc<App>, repo_cfg: &RepoConfig) {
-    if app.degraded.lock().unwrap().contains_key(repo_cfg.runtime.name()) {
+    if app
+        .degraded
+        .lock()
+        .unwrap()
+        .contains_key(repo_cfg.runtime.name())
+    {
         return;
     }
     while app.live_count(Some(&repo_cfg.repo)) < repo_cfg.pool_size
@@ -279,7 +356,11 @@ async fn top_up(app: &Arc<App>, repo_cfg: &RepoConfig) {
 }
 
 async fn spawn_runner(app: &Arc<App>, repo_cfg: &RepoConfig) {
-    let name = format!("hr-{}-{:06x}", repo_cfg.slug(), rand::random::<u32>() & 0xff_ffff);
+    let name = format!(
+        "hr-{}-{:06x}",
+        repo_cfg.slug(),
+        rand::random::<u32>() & 0xff_ffff
+    );
     let mut info = RunnerInfo {
         repo_cfg: repo_cfg.clone(),
         state: RunnerState::Listening,
@@ -290,6 +371,9 @@ async fn spawn_runner(app: &Arc<App>, repo_cfg: &RepoConfig) {
         ran_job: false,
         job: json!({}),
         log_tail: VecDeque::new(),
+        cpu_pct: 0.0,
+        mem_bytes: 0,
+        peak_mem_bytes: 0,
     };
 
     let spawned = async {
@@ -318,26 +402,54 @@ async fn spawn_runner(app: &Arc<App>, repo_cfg: &RepoConfig) {
             app.runners.lock().unwrap().insert(name.clone(), info);
             start_watchers(app, &name, repo_cfg.runtime, &container_id);
             app.record_runner(&name, None, None);
-            app.log("info", "spawn", &format!("{name} listening for {}", repo_cfg.repo));
+            app.log(
+                "info",
+                "spawn",
+                &format!("{name} listening for {}", repo_cfg.repo),
+            );
         }
         Err(err) => {
             info.state = RunnerState::Failed;
             app.runners.lock().unwrap().insert(name.clone(), info);
-            *app.backoff.lock().unwrap().entry(repo_cfg.repo.clone()).or_default() += 1;
+            *app.backoff
+                .lock()
+                .unwrap()
+                .entry(repo_cfg.repo.clone())
+                .or_default() += 1;
             app.record_runner(&name, Some(now()), None);
             app.log("error", "spawn", &format!("{name} failed: {err}"));
         }
     }
 }
 
-fn start_watchers(app: &Arc<App>, name: &str, kind: crate::config::RuntimeKind, container_id: &str) {
-    tokio::spawn(watch_exit(app.clone(), name.to_string(), kind, container_id.to_string()));
-    tokio::spawn(watch_logs(app.clone(), name.to_string(), kind, container_id.to_string()));
+fn start_watchers(
+    app: &Arc<App>,
+    name: &str,
+    kind: crate::config::RuntimeKind,
+    container_id: &str,
+) {
+    tokio::spawn(watch_exit(
+        app.clone(),
+        name.to_string(),
+        kind,
+        container_id.to_string(),
+    ));
+    tokio::spawn(watch_logs(
+        app.clone(),
+        name.to_string(),
+        kind,
+        container_id.to_string(),
+    ));
 }
 
 // -- per-runner watchers (local events only) ---------------------------------
 
-async fn watch_exit(app: Arc<App>, name: String, kind: crate::config::RuntimeKind, container_id: String) {
+async fn watch_exit(
+    app: Arc<App>,
+    name: String,
+    kind: crate::config::RuntimeKind,
+    container_id: String,
+) {
     let code = kind.wait(&container_id).await;
 
     // The conclusion arrives via the log watcher; give it a moment to land
@@ -368,12 +480,18 @@ async fn watch_exit(app: Arc<App>, name: String, kind: crate::config::RuntimeKin
     let mut log_dir: Option<String> = None;
     let mut kept_image: Option<String> = None;
     if ran_job {
-        let key = job_id.map(|i| i.to_string()).unwrap_or_else(|| name.clone());
+        let key = job_id
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| name.clone());
         let dir = app.config.data_dir.join("jobs").join(&key);
         let _ = std::fs::create_dir_all(&dir);
         let diag_dest = dir.join("diag");
         if kind
-            .copy_out(&container_id, "/home/runner/_diag", &diag_dest.to_string_lossy())
+            .copy_out(
+                &container_id,
+                "/home/runner/_diag",
+                &diag_dest.to_string_lossy(),
+            )
             .await
             .is_ok()
         {
@@ -384,18 +502,30 @@ async fn watch_exit(app: Arc<App>, name: String, kind: crate::config::RuntimeKin
         });
         let _ = std::fs::write(dir.join("meta.json"), meta.to_string());
 
-        if info.job["conclusion"].as_str() == Some("failure") && app.config.keep_failed_workspaces > 0 {
+        if info.job["conclusion"].as_str() == Some("failure")
+            && app.config.keep_failed_workspaces > 0
+        {
             let tag = format!("homerunner-kept:{key}");
             match kind.commit_image(&container_id, &tag).await {
                 Ok(()) => {
                     kept_image = Some(tag.clone());
-                    app.log("info", "keep", &format!("kept failed workspace as {tag} (homerunner exec {key})"));
+                    app.log(
+                        "info",
+                        "keep",
+                        &format!("kept failed workspace as {tag} (homerunner exec {key})"),
+                    );
                 }
-                Err(e) => app.log("warn", "keep", &format!("could not keep workspace for {name}: {e}")),
+                Err(e) => app.log(
+                    "warn",
+                    "keep",
+                    &format!("could not keep workspace for {name}: {e}"),
+                ),
             }
         }
     }
+    let oom = ran_job && kind.oom_killed(&container_id).await;
     kind.remove(&container_id).await;
+    let peak_mb = (info.peak_mem_bytes as f64 / (1024.0 * 1024.0)).round();
     if let Some(id) = job_id {
         let store = app.store.lock().unwrap();
         store.set_job_artifacts(id, log_dir.as_deref(), kept_image.as_deref());
@@ -404,6 +534,25 @@ async fn watch_exit(app: Arc<App>, name: String, kind: crate::config::RuntimeKin
         if let Some(conclusion) = info.job["conclusion"].as_str() {
             store.job_concluded(id, conclusion);
         }
+        if peak_mb > 0.0 || oom {
+            store.set_job_resources(id, peak_mb, oom);
+        }
+    } else if ran_job {
+        // Enrichment hasn't found the job id yet (short jobs often outrun the
+        // API); park the outcome for enrich_job to apply when it lands.
+        app.pending_outcomes.lock().unwrap().insert(
+            name.clone(),
+            json!({
+                "conclusion": info.job["conclusion"],
+                "log_dir": log_dir,
+                "kept_image": kept_image,
+                "peak_mem_mb": peak_mb,
+                "oom": oom,
+            }),
+        );
+    }
+    if oom {
+        app.log("warn", "reap", &format!("{name} was OOM-killed"));
     }
     gc_kept_images(&app, kind).await;
 
@@ -428,9 +577,17 @@ async fn watch_exit(app: Arc<App>, name: String, kind: crate::config::RuntimeKin
         }
     };
     if ran_job {
-        app.log("info", "reap", &format!("{name} finished its job (exit {code})"));
+        app.log(
+            "info",
+            "reap",
+            &format!("{name} finished its job (exit {code})"),
+        );
     } else {
-        app.log("warn", "reap", &format!("{name} exited without a job (exit {code})"));
+        app.log(
+            "warn",
+            "reap",
+            &format!("{name} exited without a job (exit {code})"),
+        );
     }
     app.update_caffeinate();
 
@@ -440,14 +597,23 @@ async fn watch_exit(app: Arc<App>, name: String, kind: crate::config::RuntimeKin
     top_up(&app, &repo_cfg).await;
 }
 
-async fn watch_logs(app: Arc<App>, name: String, kind: crate::config::RuntimeKind, container_id: String) {
-    let Ok(mut lines) = kind.logs(&container_id) else { return };
+async fn watch_logs(
+    app: Arc<App>,
+    name: String,
+    kind: crate::config::RuntimeKind,
+    container_id: String,
+) {
+    let Ok(mut lines) = kind.logs(&container_id) else {
+        return;
+    };
     while let Some(line) = lines.recv().await {
         let mut became_busy = false;
         let mut concluded: Option<(i64, String)> = None;
         {
             let mut runners = app.runners.lock().unwrap();
-            let Some(info) = runners.get_mut(&name) else { break };
+            let Some(info) = runners.get_mut(&name) else {
+                break;
+            };
             info.log_tail.push_back(line.clone());
             if info.log_tail.len() > 40 {
                 info.log_tail.pop_front();
@@ -479,7 +645,16 @@ async fn watch_logs(app: Arc<App>, name: String, kind: crate::config::RuntimeKin
         }
         if became_busy {
             app.update_caffeinate();
-            app.log("info", "job", &format!("{name} running: {}", app.runners.lock().unwrap()[&name].job["job_name"].as_str().unwrap_or("?")));
+            app.log(
+                "info",
+                "job",
+                &format!(
+                    "{name} running: {}",
+                    app.runners.lock().unwrap()[&name].job["job_name"]
+                        .as_str()
+                        .unwrap_or("?")
+                ),
+            );
             tokio::spawn(enrich_job(app.clone(), name.clone()));
         }
         if let Some((job_id, conclusion)) = concluded {
@@ -489,26 +664,38 @@ async fn watch_logs(app: Arc<App>, name: String, kind: crate::config::RuntimeKin
     }
 }
 
-/// A few REST lookups per busy transition, purely for the dashboard. Retries
-/// because the jobs API lags the runner's own log line in reporting
-/// runner_name.
+/// A few REST lookups per busy transition, keyed to the runner name. Retries
+/// past runner exit: a short job can be reaped before the jobs API ever
+/// reported its runner_name, and its reap outcome waits in pending_outcomes.
 async fn enrich_job(app: Arc<App>, name: String) {
-    for _ in 0..5 {
-        let (repo, busy_at, still_busy) = {
-            let runners = app.runners.lock().unwrap();
-            let Some(info) = runners.get(&name) else { return };
-            (info.repo_cfg.repo.clone(), info.busy_at, info.state == RunnerState::Busy)
-        };
-        if !still_busy {
+    let (repo, busy_at) = {
+        let runners = app.runners.lock().unwrap();
+        let Some(info) = runners.get(&name) else {
             return;
+        };
+        (info.repo_cfg.repo.clone(), info.busy_at)
+    };
+    for attempt in 0..8 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_secs(8)).await;
         }
         match app.github.find_job_by_runner(&repo, &name).await {
             Err(_) => return,
+            Ok(None) => continue,
             Ok(Some(found)) => {
                 {
                     let mut runners = app.runners.lock().unwrap();
                     if let Some(info) = runners.get_mut(&name) {
-                        for key in ["job_id", "run_id", "workflow", "html_url"] {
+                        for key in [
+                            "job_id",
+                            "run_id",
+                            "workflow",
+                            "html_url",
+                            "head_branch",
+                            "head_sha",
+                            "title",
+                            "event",
+                        ] {
                             info.job[key] = found[key].clone();
                         }
                         if info.job["job_name"].is_null() {
@@ -516,11 +703,35 @@ async fn enrich_job(app: Arc<App>, name: String) {
                         }
                     }
                 }
-                app.store.lock().unwrap().job_started(&found, &repo, &name, busy_at);
+                let job_id = found["job_id"].as_i64();
+                let pending = app.pending_outcomes.lock().unwrap().remove(&name);
+                {
+                    let store = app.store.lock().unwrap();
+                    store.job_started(&found, &repo, &name, busy_at);
+                    // The runner may already be reaped; apply its parked outcome.
+                    if let (Some(id), Some(outcome)) = (job_id, pending.as_ref()) {
+                        if let Some(conclusion) = outcome["conclusion"].as_str() {
+                            store.job_concluded(id, conclusion);
+                        }
+                        store.set_job_artifacts(
+                            id,
+                            outcome["log_dir"].as_str(),
+                            outcome["kept_image"].as_str(),
+                        );
+                        if outcome["peak_mem_mb"].as_f64().unwrap_or(0.0) > 0.0
+                            || outcome["oom"].as_bool() == Some(true)
+                        {
+                            store.set_job_resources(
+                                id,
+                                outcome["peak_mem_mb"].as_f64().unwrap_or(0.0),
+                                outcome["oom"].as_bool() == Some(true),
+                            );
+                        }
+                    }
+                }
                 let _ = app.change_tx.send(());
                 return;
             }
-            Ok(None) => tokio::time::sleep(Duration::from_secs(8)).await,
         }
     }
 }
@@ -563,13 +774,21 @@ async fn watchdog(app: Arc<App>) {
             .map(|(n, r)| (n.clone(), r.repo_cfg.runtime, r.container_id.clone()))
             .collect();
         for (name, kind, container_id) in stuck {
-            app.log("error", "watchdog", &format!("{name} exceeded job timeout; killing"));
+            app.log(
+                "error",
+                "watchdog",
+                &format!("{name} exceeded job timeout; killing"),
+            );
             kind.kill(&container_id).await;
         }
         if ts - last_release_check > 86_400.0 {
             last_release_check = ts;
             if let Ok(latest) = app.github.latest_runner_release().await {
-                app.log("info", "staleness", &format!("latest actions/runner release: v{latest}"));
+                app.log(
+                    "info",
+                    "staleness",
+                    &format!("latest actions/runner release: v{latest}"),
+                );
             }
         }
     }

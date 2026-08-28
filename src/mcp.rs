@@ -93,7 +93,9 @@ pub async fn serve(cfg: Config) -> Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         let method = msg["method"].as_str().unwrap_or("");
         let id = msg["id"].clone();
         if id.is_null() {

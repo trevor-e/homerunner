@@ -29,11 +29,18 @@ pub fn router(app: Arc<App>) -> Router {
 async fn job_logs(State(app): State<Arc<App>>, Path(id): Path<i64>) -> axum::response::Response {
     let job = app.store.lock().unwrap().job(id);
     let Some(job) = job else {
-        return (axum::http::StatusCode::NOT_FOUND, format!("no job {id} recorded")).into_response();
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            format!("no job {id} recorded"),
+        )
+            .into_response();
     };
     match crate::agent::read_worker_logs(&job) {
         Ok(text) => (
-            [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
             text,
         )
             .into_response(),
@@ -66,9 +73,7 @@ async fn rate(State(app): State<Arc<App>>) -> impl IntoResponse {
     }
 }
 
-async fn events(
-    State(app): State<Arc<App>>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+async fn events(State(app): State<Arc<App>>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = app.change_tx.subscribe();
     let stream = BroadcastStream::new(rx).map(|_| Ok(Event::default().data("changed")));
     Sse::new(stream)
@@ -80,15 +85,22 @@ async fn runner_logs(
 ) -> axum::response::Response {
     let target = {
         let runners = app.runners.lock().unwrap();
-        runners.get(&name).map(|r| (r.repo_cfg.runtime, r.container_id.clone()))
+        runners
+            .get(&name)
+            .map(|r| (r.repo_cfg.runtime, r.container_id.clone()))
     };
     let Some((kind, container_id)) = target else {
-        return (axum::http::StatusCode::NOT_FOUND, format!("no live runner {name}")).into_response();
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            format!("no live runner {name}"),
+        )
+            .into_response();
     };
     let Ok(rx) = kind.logs(&container_id) else {
         return (axum::http::StatusCode::BAD_GATEWAY, "log stream failed").into_response();
     };
-    let stream = ReceiverStream::new(rx)
-        .map(|line| Ok::<_, Infallible>(Event::default().data(serde_json::json!(line).to_string())));
+    let stream = ReceiverStream::new(rx).map(|line| {
+        Ok::<_, Infallible>(Event::default().data(serde_json::json!(line).to_string()))
+    });
     Sse::new(stream).into_response()
 }

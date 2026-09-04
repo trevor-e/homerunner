@@ -1,5 +1,5 @@
-//! Localhost dashboard: state snapshot + SSE change feed + runner log tails.
-//! Full step logs live in GitHub's Actions UI; this covers the infra side.
+//! Localhost control center: fleet state, job history, storage, activity, and
+//! searchable views over captured and live runner logs.
 
 use crate::scheduler::App;
 use axum::extract::{Path, State};
@@ -14,14 +14,20 @@ use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tokio_stream::StreamExt;
 
 const INDEX_HTML: &str = include_str!("../assets/index.html");
+const LOGS_INDEX_HTML: &str = include_str!("../assets/logs_index.html");
+const LOGS_HTML: &str = include_str!("../assets/logs.html");
 
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/logs", get(logs_index))
+        .route("/jobs/{id}/logs", get(log_viewer))
+        .route("/runners/{name}/logs", get(log_viewer))
         .route("/api/state", get(state))
         .route("/api/rate", get(rate))
         .route("/events", get(events))
         .route("/api/runners/{name}/logs", get(runner_logs))
+        .route("/api/jobs/{id}", get(job))
         .route("/api/jobs/{id}/logs", get(job_logs))
         .route("/api/disk", get(disk))
         .with_state(app)
@@ -166,6 +172,25 @@ async fn job_logs(State(app): State<Arc<App>>, Path(id): Path<i64>) -> axum::res
 
 async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
+}
+
+async fn logs_index() -> Html<&'static str> {
+    Html(LOGS_INDEX_HTML)
+}
+
+async fn log_viewer() -> Html<&'static str> {
+    Html(LOGS_HTML)
+}
+
+async fn job(State(app): State<Arc<App>>, Path(id): Path<i64>) -> axum::response::Response {
+    match app.store.lock().unwrap().job(id) {
+        Some(job) => Json(job).into_response(),
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("no job {id} recorded")})),
+        )
+            .into_response(),
+    }
 }
 
 async fn state(State(app): State<Arc<App>>) -> Json<serde_json::Value> {

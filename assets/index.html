@@ -3,266 +3,347 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>homerunner</title>
+<meta name="color-scheme" content="dark">
+<title>Homerunner · Control Center</title>
 <style>
   :root {
-    --bg: #f6f7f8; --panel: #ffffff; --ink: #17181a; --ink-2: #55585e; --ink-3: #8b8f96;
-    --line: #e3e5e8; --line-soft: #edeff1;
-    --accent: #2761E0;
-    --ok: #177a3d; --ok-bg: #e4f3ea;
-    --warn: #92610a; --warn-bg: #fbf0d7;
-    --bad: #c22a36; --bad-bg: #fbe6e8;
-    --idle: #55585e; --idle-bg: #eceef0;
-    --tail-bg: #17181a; --tail-ink: #b7bcc4;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #101114; --panel: #191b1f; --ink: #e8e9eb; --ink-2: #a2a6ad; --ink-3: #6d7178;
-      --line: #2a2d32; --line-soft: #222429;
-      --accent: #6b96ee;
-      --ok: #4cc477; --ok-bg: #17301f;
-      --warn: #ddab3b; --warn-bg: #322813;
-      --bad: #ee6b74; --bad-bg: #391b1e;
-      --idle: #a2a6ad; --idle-bg: #24262b;
-      --tail-bg: #0b0c0e; --tail-ink: #8b8f96;
-    }
+    --bg: #080b10; --panel: #0d1118; --panel-2: #111720; --panel-3: #151d28;
+    --line: #202a38; --line-bright: #304055; --text: #e7edf5; --muted: #8290a3; --faint: #556274;
+    --cyan: #5de4c7; --blue: #7aa2f7; --violet: #bb9af7; --green: #73daca;
+    --amber: #e0af68; --red: #f7768e; --radius: 12px; --shadow: 0 20px 60px rgba(0,0,0,.24);
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; }
-  body {
-    background: var(--bg); color: var(--ink);
-    font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-    overflow-x: hidden;
-  }
-  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
-  .num  { font-variant-numeric: tabular-nums; }
+  html { background: var(--bg); }
+  body { margin: 0; color: var(--text); background:
+    radial-gradient(circle at 76% -10%, rgba(93,228,199,.08), transparent 28rem),
+    radial-gradient(circle at 15% 0%, rgba(122,162,247,.07), transparent 24rem), var(--bg);
+    font: 13px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    min-height: 100vh; }
+  button, input, select { font: inherit; }
+  button, a { -webkit-tap-highlight-color: transparent; }
+  a { color: inherit; text-decoration: none; }
+  .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+  .num { font-variant-numeric: tabular-nums; }
 
-  header {
-    position: sticky; top: 0; z-index: 5;
-    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-    padding: 12px 20px; background: var(--panel);
-    border-bottom: 1px solid var(--line);
-  }
-  header h1 { font-size: 15px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
-  header .logo { width: 10px; height: 10px; border-radius: 3px; background: var(--accent); }
-  #meta { color: var(--ink-3); font-size: 12.5px; margin-left: auto; }
+  .app { min-height: 100vh; display:grid; grid-template-columns:200px minmax(0,1fr); }
+  aside { position:fixed; inset:0 auto 0 0; width:200px; padding:20px 13px; border-right:1px solid var(--line); background:rgba(8,11,16,.82); backdrop-filter:blur(22px); z-index:20; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 720; font-size: 15px; letter-spacing: -.02em; white-space: nowrap; }
+  .brandmark { width: 25px; height: 25px; position: relative; border: 1px solid rgba(93,228,199,.45); border-radius: 7px; background: rgba(93,228,199,.07); box-shadow: inset 0 0 14px rgba(93,228,199,.06); }
+  .brandmark::before, .brandmark::after { content: ""; position: absolute; background: var(--cyan); border-radius: 1px; }
+  .brandmark::before { width: 11px; height: 2px; left: 6px; top: 7px; box-shadow: 0 7px 0 var(--blue); }
+  .brandmark::after { width: 2px; height: 7px; left: 11px; top: 9px; }
+  .brand small { color: var(--faint); font: 10px/1.2 "SFMono-Regular", monospace; }
+  .side-nav { margin-top:24px; }
+  .side-nav a { height:36px; margin:2px 0; padding:0 10px; display:flex; align-items:center; gap:9px; border-radius:7px; color:var(--muted); }
+  .side-nav a:hover { color:var(--text); background:var(--panel-2); }
+  .side-nav a.active { color:var(--text); background:linear-gradient(90deg,rgba(93,228,199,.11),rgba(93,228,199,.02)); box-shadow:inset 2px 0 var(--cyan); }
+  .side-nav .icon { width:15px; color:var(--cyan); font:12px "SFMono-Regular",monospace; }
+  .nav-badge { min-width:19px; height:18px; padding:0 5px; margin-left:auto; display:grid; place-items:center; border-radius:9px; color:#ff9aae; background:rgba(247,118,142,.12); font:9px "SFMono-Regular",monospace; }
+  .side-status { position:absolute; left:13px; right:13px; bottom:17px; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
+  .connection { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+  .connection i { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 10px currentColor; }
+  .connection.online i { background: var(--cyan); }
+  .content { grid-column:2; min-width: 0; }
+  header { height: 64px; position: sticky; top: 0; z-index: 10; border-bottom: 1px solid rgba(32,42,56,.8); background: rgba(8,11,16,.72); backdrop-filter: blur(20px); display: flex; align-items: center; justify-content: space-between; padding: 0 30px; }
+  .header-left { display: flex; align-items: center; min-width: 0; }
+  .header-title { font-weight:650; }
+  .header-actions { display: flex; align-items: center; gap: 9px; }
+  .kbd { border: 1px solid var(--line-bright); background: var(--panel); color: var(--faint); border-radius: 5px; padding: 1px 5px; font: 10px/1.4 "SFMono-Regular", monospace; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); color: var(--muted); cursor: pointer; transition: .15s ease; }
+  .btn:hover { color: var(--text); border-color: var(--line-bright); transform: translateY(-1px); }
+  .btn.primary { background: rgba(93,228,199,.09); border-color: rgba(93,228,199,.28); color: var(--cyan); }
+  .btn.icon { width: 32px; padding: 0; }
+  .btn.spin svg { animation: rotate .7s linear infinite; }
+  @keyframes rotate { to { transform: rotate(360deg); } }
 
-  #degraded {
-    display: none; padding: 8px 20px; font-size: 13px;
-    background: var(--bad-bg); color: var(--bad);
-    border-bottom: 1px solid var(--line);
-  }
+  main { max-width: 1510px; padding: 32px 34px 60px; margin: auto; }
+  #degraded { display: none; margin-bottom: 18px; border: 1px solid rgba(247,118,142,.28); background: rgba(247,118,142,.07); color: #ff9aae; padding: 11px 13px; border-radius: 8px; }
 
-  main {
-    max-width: 1040px; margin: 0 auto; padding: 20px;
-    display: flex; flex-direction: column; gap: 20px; min-width: 0;
-  }
+  .metrics { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin-bottom: 20px; }
+  .metric, .panel { border: 1px solid var(--line); background: linear-gradient(145deg, rgba(17,23,32,.92), rgba(13,17,24,.96)); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .metric { padding: 17px 18px 15px; min-height: 108px; position: relative; overflow: hidden; }
+  .metric::after { content: ""; position: absolute; width: 80px; height: 80px; border-radius: 50%; right: -35px; top: -35px; background: var(--metric, var(--blue)); opacity: .06; box-shadow: 0 0 25px currentColor; }
+  .metric-label { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+  .metric-value { margin-top: 7px; font-size: 27px; line-height: 1; font-weight: 680; letter-spacing: -.04em; }
+  .metric-foot { margin-top: 8px; color: var(--faint); font-size: 11px; }
+  .metric-foot .good { color: var(--cyan); }
+  .metric-foot .bad { color: var(--red); }
 
-  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-  .tile {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-    padding: 12px 14px; min-width: 0;
-  }
-  .tile .repo { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tile .fraction { font-size: 22px; font-weight: 650; margin-top: 2px; }
-  .tile .fraction small { font-size: 13px; font-weight: 500; color: var(--ink-3); }
-  .tile .sub { color: var(--ink-3); font-size: 12px; margin-top: 1px; }
+  .attention { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 20px; padding: 16px 18px; margin: -4px 0 20px; border: 1px solid rgba(247,118,142,.28); border-radius: var(--radius); background: linear-gradient(100deg, rgba(247,118,142,.10), rgba(17,23,32,.95) 45%); box-shadow: var(--shadow); }
+  .attention-copy { display: flex; gap: 13px; align-items: center; min-width: 0; }
+  .attention-icon { width: 34px; height: 34px; flex: none; border-radius: 8px; display: grid; place-items: center; color: var(--red); border: 1px solid rgba(247,118,142,.25); background: rgba(247,118,142,.09); font: 700 15px "SFMono-Regular", monospace; }
+  .attention-label { color: var(--red); text-transform: uppercase; letter-spacing: .11em; font-size: 9px; font-weight: 750; }
+  .attention-title { margin-top: 2px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .attention-meta { margin-top: 2px; color: var(--muted); font-size: 10px; }
+  .attention-actions { display: flex; gap: 7px; }
+  .btn.danger { color: #ff9aae; border-color: rgba(247,118,142,.35); background: rgba(247,118,142,.10); }
 
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
-  section > h2 {
-    font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em;
-    color: var(--ink-3); margin: 0; padding: 10px 14px 8px;
-  }
-  .tablewrap { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th {
-    text-align: left; font-weight: 500; font-size: 11.5px; color: var(--ink-3);
-    padding: 4px 14px 6px; border-bottom: 1px solid var(--line-soft); white-space: nowrap;
-  }
-  td { padding: 7px 14px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; vertical-align: middle; }
-  tr:last-child td { border-bottom: 0; }
-  td.dim { color: var(--ink-2); }
-  td.shrink { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
-  .empty { color: var(--ink-3); padding: 10px 14px 14px; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(290px, .75fr); gap: 16px; align-items: start; }
+  .stack { display: grid; gap: 16px; min-width: 0; }
+  .panel { min-width: 0; overflow: hidden; }
+  .panel-head { min-height: 51px; padding: 0 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .panel-title { display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 680; }
+  .panel-title i { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 8px var(--blue); }
+  .panel-meta { color: var(--faint); font: 10px "SFMono-Regular", monospace; }
+  .empty { color: var(--faint); padding: 26px 16px; text-align: center; }
 
-  .pill {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 2px 9px 2px 7px; border-radius: 999px; font-size: 12px; font-weight: 550;
-    background: var(--pill-bg, var(--idle-bg)); color: var(--ink);
-  }
-  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--pill-dot, var(--idle)); flex: none; }
-  .pill.listening { --pill-bg: var(--idle-bg); --pill-dot: var(--accent); }
-  .pill.busy      { --pill-bg: var(--warn-bg); --pill-dot: var(--warn); }
-  .pill.success   { --pill-bg: var(--ok-bg);   --pill-dot: var(--ok); }
-  .pill.failure   { --pill-bg: var(--bad-bg);  --pill-dot: var(--bad); }
-  .pill.cancelled { --pill-bg: var(--idle-bg); --pill-dot: var(--idle); }
-  .pill.busy::before { animation: pulse 1.6s ease-in-out infinite; }
-  @keyframes pulse { 50% { opacity: 0.35; } }
+  .repo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px,1fr)); gap: 10px; padding: 12px; }
+  .repo-card { padding: 14px; border: 1px solid var(--line); background: rgba(8,11,16,.42); border-radius: 9px; transition: border-color .15s; }
+  .repo-card:hover { border-color: var(--line-bright); }
+  .repo-name { font-weight: 640; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .repo-runtime { color: var(--faint); font: 10px "SFMono-Regular", monospace; margin-top: 3px; }
+  .capacity-row { display: flex; justify-content: space-between; align-items: baseline; margin-top: 13px; }
+  .capacity-row b { font-size: 19px; font-weight: 650; }
+  .capacity-row span { color: var(--muted); font-size: 10px; }
+  .bar { height: 3px; margin-top: 8px; border-radius: 5px; background: var(--line); overflow: hidden; }
+  .bar span { display: block; height: 100%; background: linear-gradient(90deg,var(--blue),var(--cyan)); box-shadow: 0 0 9px var(--cyan); }
 
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th { padding: 9px 14px; color: var(--faint); text-align: left; text-transform: uppercase; letter-spacing: .1em; font-size: 9px; font-weight: 720; white-space: nowrap; background: rgba(8,11,16,.32); }
+  td { padding: 10px 14px; border-top: 1px solid rgba(32,42,56,.72); vertical-align: middle; white-space: nowrap; }
+  tbody tr { transition: background .12s; }
+  tbody tr:hover { background: rgba(122,162,247,.035); }
+  td.compact { max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
+  .subtle { color: var(--muted); }
+  .faint { color: var(--faint); }
+  .link { color: var(--blue); }
+  .link:hover { color: #a9c1ff; }
+  .status { display: inline-flex; align-items: center; gap: 6px; height: 23px; padding: 0 8px; border-radius: 5px; font-size: 10px; font-weight: 680; text-transform: uppercase; letter-spacing: .04em; background: rgba(130,144,163,.09); color: var(--muted); }
+  .status::before { content:""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; box-shadow: 0 0 7px currentColor; }
+  .status.success, .status.listening { color: var(--cyan); background: rgba(93,228,199,.08); }
+  .status.failure { color: var(--red); background: rgba(247,118,142,.09); }
+  .status.busy { color: var(--amber); background: rgba(224,175,104,.09); }
+  .status.cancelled { color: var(--muted); }
+  .status.busy::before { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .table-action { display: inline-flex; height: 26px; align-items: center; gap: 5px; padding: 0 8px; color: var(--muted); border: 1px solid transparent; border-radius: 5px; cursor: pointer; background: transparent; }
+  .table-action:hover { color: var(--cyan); border-color: var(--line); background: var(--panel-2); }
 
-  #tailbox { padding: 0 14px 12px; }
-  pre#tail {
-    margin: 0; padding: 10px 12px; border-radius: 8px;
-    background: var(--tail-bg); color: var(--tail-ink);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.55;
-    overflow-x: auto; max-height: 220px; overflow-y: auto;
+  .events { padding: 6px 0; max-height: 390px; overflow: auto; }
+  .event { display: grid; grid-template-columns: 9px minmax(0,1fr); gap: 10px; padding: 10px 16px; position: relative; }
+  .event:not(:last-child)::after { content:""; position:absolute; left:20px; top:25px; bottom:-6px; border-left:1px solid var(--line); }
+  .event-dot { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; background: var(--blue); z-index: 1; box-shadow: 0 0 0 3px var(--panel); }
+  .event.warn .event-dot { background: var(--amber); }
+  .event.error .event-dot { background: var(--red); }
+  .event-copy { min-width: 0; color: var(--muted); font-size: 11px; }
+  .event-copy b { color: var(--text); font-weight: 600; }
+  .event-copy p { margin: 2px 0 0; overflow-wrap: anywhere; }
+  .event-time { color: var(--faint); font: 9px "SFMono-Regular", monospace; margin-left: 6px; }
+  .storage-list { padding: 4px 0; }
+  .storage-row { padding: 12px 16px; border-top: 1px solid rgba(32,42,56,.68); }
+  .storage-row:first-child { border-top: 0; }
+  .storage-main { display: flex; justify-content: space-between; gap: 12px; }
+  .storage-main b { font-size: 11px; font-weight: 620; }
+  .storage-main span { color: var(--text); font: 11px "SFMono-Regular", monospace; }
+  .storage-path { color: var(--faint); font: 9px "SFMono-Regular", monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
+  .storage-note { color: var(--muted); font-size: 10px; margin-top: 3px; }
+  .toast { position: fixed; right: 22px; bottom: 22px; background: var(--panel-3); color: var(--text); border: 1px solid var(--line-bright); border-radius: 8px; padding: 9px 12px; box-shadow: var(--shadow); transform: translateY(15px); opacity: 0; pointer-events: none; transition: .2s; z-index: 50; }
+  .toast.show { transform: translateY(0); opacity: 1; }
+
+  @media (max-width: 1050px) { .grid { grid-template-columns: 1fr; } .right { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+  @media (max-width: 760px) {
+    .app { display:block; } aside { display:none; } .content { grid-column:auto; }
+    header { padding: 0 16px; } main { padding: 24px 15px 45px; }
+    .metrics { grid-template-columns: repeat(2,1fr); }
+    .right { grid-template-columns:1fr; } .hide-mobile { display:none; }
+    .attention { grid-template-columns:1fr; gap:12px; } .attention-actions { padding-left:47px; }
   }
 </style>
 </head>
 <body>
-<header>
-  <div class="logo"></div>
-  <h1>homerunner</h1>
-  <span id="meta">connecting…</span>
-</header>
-<div id="degraded"></div>
-<main>
-  <div class="tiles" id="tiles"></div>
+<div class="app">
+  <aside>
+    <div class="brand"><span class="brandmark"></span>homerunner <small>v0.2</small></div>
+    <nav class="side-nav">
+      <a class="active" href="/"><span class="icon">⌂</span>Overview</a>
+      <a href="/logs"><span class="icon">⌁</span>Logs <span class="nav-badge" id="failed-badge" hidden></span></a>
+    </nav>
+    <div class="side-status"><div class="connection" id="connection"><i></i><span>Connecting</span></div></div>
+  </aside>
+  <div class="content">
+    <header>
+      <div class="header-left"><div class="header-title">Overview</div></div>
+      <div class="header-actions"><span class="hide-mobile faint mono" id="header-summary">Loading state…</span><button class="btn icon" id="refresh" title="Refresh dashboard" aria-label="Refresh dashboard"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button></div>
+    </header>
 
-  <section>
-    <h2>Runners</h2>
-    <div class="tablewrap"><table>
-      <thead><tr><th>Runner</th><th>Repo</th><th>State</th><th>Job</th><th>CPU</th><th>Mem</th><th>Up</th></tr></thead>
-      <tbody id="runners"></tbody>
-    </table></div>
-    <div class="empty" id="runners-empty" hidden>No live runners.</div>
-    <div id="tailbox" hidden><pre id="tail"></pre></div>
-  </section>
+    <main id="overview">
+      <div id="degraded"></div>
 
-  <section>
-    <h2>Job history</h2>
-    <div class="tablewrap"><table>
-      <thead><tr><th>Result</th><th>Repo</th><th>Commit</th><th>Workflow</th><th>Job</th><th>Took</th><th>When</th><th></th></tr></thead>
-      <tbody id="jobs"></tbody>
-    </table></div>
-    <div class="empty" id="jobs-empty" hidden>No jobs yet — push something.</div>
-  </section>
+      <div class="metrics">
+        <div class="metric" style="--metric:var(--cyan)"><div class="metric-label">Capacity</div><div class="metric-value num" id="m-capacity">—</div><div class="metric-foot" id="m-capacity-foot"></div></div>
+        <div class="metric" style="--metric:var(--amber)"><div class="metric-label">Running</div><div class="metric-value num" id="m-active">—</div><div class="metric-foot" id="m-active-foot"></div></div>
+        <div class="metric" style="--metric:var(--blue)"><div class="metric-label">Pass rate</div><div class="metric-value num" id="m-pass">—</div><div class="metric-foot" id="m-pass-foot"></div></div>
+        <div class="metric" style="--metric:var(--violet)"><div class="metric-label">Median duration</div><div class="metric-value num" id="m-duration">—</div></div>
+      </div>
 
-  <section>
-    <h2>Disk</h2>
-    <div class="tablewrap"><table>
-      <thead><tr><th>What</th><th>Where</th><th>Size</th><th>Retention</th></tr></thead>
-      <tbody id="disk"></tbody>
-    </table></div>
-  </section>
-</main>
+      <section class="attention" id="attention" hidden>
+        <div class="attention-copy"><div class="attention-icon">!</div><div style="min-width:0"><div class="attention-label">Latest failure</div><div class="attention-title" id="attention-title"></div><div class="attention-meta" id="attention-meta"></div></div></div>
+        <div class="attention-actions"><a class="btn danger" id="attention-logs">⌁ Open logs</a><button class="btn" id="attention-workspace" hidden>◫ Copy debug command</button><a class="btn" id="attention-github" target="_blank" rel="noopener">↗ GitHub</a></div>
+      </section>
+
+      <div class="grid">
+        <div class="stack">
+          <section class="panel">
+            <div class="panel-head"><div class="panel-title"><i></i>Repositories</div><div class="panel-meta" id="repo-meta"></div></div>
+            <div class="repo-grid" id="repos"></div>
+          </section>
+
+          <section class="panel" id="runners">
+            <div class="panel-head"><div class="panel-title"><i style="background:var(--cyan);box-shadow:0 0 8px var(--cyan)"></i>Live runners</div><div class="panel-meta" id="runner-meta"></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Runner</th><th>Repository</th><th>State</th><th>Current job</th><th>CPU</th><th>Memory</th><th>Uptime</th><th></th></tr></thead><tbody id="runner-rows"></tbody></table></div>
+            <div class="empty" id="runner-empty" hidden>No live runners.</div>
+          </section>
+
+        </div>
+
+        <div class="stack right">
+          <section class="panel" id="activity">
+            <div class="panel-head"><div class="panel-title"><i style="background:var(--amber);box-shadow:0 0 8px var(--amber)"></i>System activity</div></div>
+            <div class="events" id="events"></div><div class="empty" id="events-empty" hidden>No recorded activity yet.</div>
+          </section>
+          <section class="panel" id="storage">
+            <div class="panel-head"><div class="panel-title"><i style="background:var(--blue);box-shadow:0 0 8px var(--blue)"></i>Local storage</div><div class="panel-meta" id="storage-total"></div></div>
+            <div class="storage-list" id="storage-list"><div class="empty">Calculating usage…</div></div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
 <script>
 const $ = (id) => document.getElementById(id);
-const esc = (t) => { const d = document.createElement("div"); d.textContent = t ?? ""; return d.innerHTML; };
+const esc = (value) => { const node = document.createElement("div"); node.textContent = value ?? ""; return node.innerHTML; };
+const safeExternal = (value) => { try { const u = new URL(value); return u.protocol === "https:" ? u.href : "#"; } catch { return "#"; } };
 const now = () => Date.now() / 1000;
+let snapshot = { repos: [], runners: [], jobs: [], events: [] };
 
-function age(sec) {
-  if (sec == null || !isFinite(sec) || sec < 0) return "";
-  if (sec < 60) return Math.round(sec) + "s";
-  if (sec < 5400) return Math.round(sec / 60) + "m";
-  if (sec < 129600) return (sec / 3600).toFixed(1) + "h";
-  return Math.round(sec / 86400) + "d";
+function age(seconds, compact = true) {
+  if (seconds == null || !isFinite(seconds) || seconds < 0) return "—";
+  if (seconds < 60) return Math.round(seconds) + "s";
+  if (seconds < 3600) return Math.round(seconds / 60) + "m";
+  if (seconds < 86400) return compact ? (seconds / 3600).toFixed(seconds < 7200 ? 1 : 0) + "h" : Math.round(seconds / 3600) + " hours";
+  return Math.round(seconds / 86400) + "d";
+}
+function bytes(value) {
+  if (!value) return "0 B";
+  if (value >= 1024 ** 3) return (value / 1024 ** 3).toFixed(1) + " GB";
+  if (value >= 1024 ** 2) return Math.round(value / 1024 ** 2) + " MB";
+  if (value >= 1024) return Math.round(value / 1024) + " KB";
+  return value + " B";
+}
+function status(state) {
+  const normalized = state === "passed" ? "success" : state === "running" ? "busy" : (state || "cancelled");
+  const label = { listening: "Ready", busy: "Running", success: "Passed", failure: "Failed", cancelled: "Cancelled" }[normalized] || normalized;
+  return `<span class="status ${esc(normalized)}">${esc(label)}</span>`;
+}
+function median(values) { if (!values.length) return null; const v = [...values].sort((a,b) => a-b); const i = Math.floor(v.length/2); return v.length % 2 ? v[i] : (v[i-1]+v[i])/2; }
+function showToast(message) { const el = $("toast"); el.textContent = message; el.classList.add("show"); clearTimeout(showToast.timer); showToast.timer = setTimeout(() => el.classList.remove("show"), 1800); }
+
+function renderMetrics() {
+  const completed = snapshot.jobs.filter(j => j.conclusion === "success" || j.conclusion === "failure");
+  const passed = completed.filter(j => j.conclusion === "success").length;
+  const active = snapshot.runners.filter(r => r.state === "busy").length;
+  const live = snapshot.runners.length;
+  const capacity = snapshot.repos.reduce((n,r) => n + (r.max || 0), 0);
+  const durations = completed.filter(j => j.started_at && j.completed_at).map(j => j.completed_at - j.started_at);
+  const med = median(durations);
+  $("m-capacity").textContent = `${live} / ${capacity}`;
+  $("m-capacity-foot").innerHTML = `<span class="good">${snapshot.runners.filter(r => r.state === "listening").length} ready</span> · ${Math.max(0,capacity-live)} elastic slots`;
+  $("m-active").textContent = active;
+  $("m-active-foot").textContent = active ? `${active} active` : "Idle";
+  $("m-pass").textContent = completed.length ? Math.round(passed / completed.length * 100) + "%" : "—";
+  $("m-pass-foot").innerHTML = completed.length ? `<span class="good">${passed} passed</span> · <span class="${completed.length-passed ? "bad" : ""}">${completed.length-passed} failed</span>` : "no completed jobs";
+  $("m-duration").textContent = med == null ? "—" : age(med);
 }
 
-function fmtMem(bytes) {
-  if (!bytes) return "";
-  if (bytes >= 1024 ** 3) return (bytes / 1024 ** 3).toFixed(1) + "G";
-  return Math.round(bytes / 1024 ** 2) + "M";
+function renderAttention() {
+  const failed = snapshot.jobs.find(j => j.job_name && j.conclusion === "failure");
+  const failedCount = snapshot.jobs.filter(j => j.job_name && j.conclusion === "failure" && j.log_dir).length;
+  $("failed-badge").hidden = failedCount === 0;
+  $("failed-badge").textContent = failedCount;
+  $("attention").hidden = !failed;
+  if (!failed) return;
+  $("attention-title").textContent = `${failed.repo} · ${failed.workflow || "Workflow"} / ${failed.job_name}`;
+  $("attention-meta").textContent = [failed.head_branch, failed.head_sha?.slice(0,7), failed.completed_at ? age(now()-failed.completed_at)+" ago" : null, failed.oom ? "OOM killed" : null].filter(Boolean).join("  ·  ");
+  $("attention-logs").href = failed.log_dir ? `/jobs/${failed.gh_job_id}/logs` : safeExternal(failed.html_url);
+  $("attention-logs").textContent = failed.log_dir ? "⌁ Open logs" : "↗ View on GitHub";
+  $("attention-workspace").hidden = !failed.kept_image;
+  $("attention-workspace").onclick = failed.kept_image ? async () => { await navigator.clipboard.writeText(`homerunner exec ${failed.gh_job_id}`); showToast("Debug command copied"); } : null;
+  const github = safeExternal(failed.html_url);
+  $("attention-github").hidden = github === "#";
+  $("attention-github").href = github;
 }
 
-function pill(state) {
-  const label = { listening: "listening", busy: "running", success: "passed", failure: "failed", cancelled: "cancelled" }[state] || state;
-  return `<span class="pill ${esc(state)}">${esc(label)}</span>`;
+function renderRepos() {
+  $("repo-meta").textContent = `${snapshot.repos.length} CONFIGURED`;
+  $("repos").innerHTML = snapshot.repos.map(r => {
+    const pct = r.max ? Math.min(100, r.live / r.max * 100) : 0;
+    return `<article class="repo-card"><div class="repo-name" title="${esc(r.repo)}">${esc(r.repo)}</div><div class="repo-runtime">${esc(r.runtime)} runtime</div><div class="capacity-row"><b class="num">${r.live}<span> / ${r.max}</span></b><span>${r.reserved} warm reserved</span></div><div class="bar"><span style="width:${pct}%"></span></div></article>`;
+  }).join("") || `<div class="empty">No repositories configured.</div>`;
 }
 
-function jobCell(job) {
-  const name = job?.job_name || "";
-  if (!name) return "";
-  const wf = job?.workflow && job.workflow !== name ? `<span class="dim">${esc(job.workflow)} / </span>` : "";
-  return job?.html_url
-    ? `${wf}<a href="${esc(job.html_url)}" target="_blank" rel="noopener">${esc(name)}</a>`
-    : `${wf}${esc(name)}`;
+function renderRunners() {
+  $("runner-meta").textContent = `${snapshot.runners.filter(r => r.state === "listening").length} READY · ${snapshot.runners.filter(r => r.state === "busy").length} BUSY`;
+  $("runner-rows").innerHTML = snapshot.runners.map(r => {
+    const job = r.job || {};
+    const jobName = job.job_name || job.workflow || "Waiting for a job";
+    return `<tr><td class="mono compact" title="${esc(r.name)}">${esc(r.name.split("-").slice(-2).join("-"))}</td><td class="subtle compact">${esc(r.repo)}</td><td>${status(r.state)}</td><td class="compact ${r.state === "busy" ? "" : "faint"}" title="${esc(jobName)}">${job.html_url ? `<a class="link" href="${esc(safeExternal(job.html_url))}" target="_blank" rel="noopener">${esc(jobName)}</a>` : esc(jobName)}</td><td class="num subtle">${r.cpu_pct == null ? "—" : r.cpu_pct.toFixed(0)+"%"}</td><td class="num subtle">${r.mem_bytes == null ? "—" : bytes(r.mem_bytes)}</td><td class="num subtle">${age(now()-r.created_at)}</td><td><a class="table-action" href="/runners/${encodeURIComponent(r.name)}/logs" title="Open live logs">⌁ Logs</a></td></tr>`;
+  }).join("");
+  $("runner-empty").hidden = snapshot.runners.length > 0;
+}
+
+function renderEvents() {
+  const events = (snapshot.events || []).filter(e => e.source !== "job");
+  $("events").innerHTML = events.map(e => `<div class="event ${esc(e.level || "")}"><span class="event-dot"></span><div class="event-copy"><div><b>${esc(e.source || "system")}</b><span class="event-time num">${e.ts ? age(now()-e.ts)+" ago" : ""}</span></div><p>${esc(e.msg || "")}</p></div></div>`).join("");
+  $("events-empty").hidden = events.length > 0;
+}
+function render() {
+  renderMetrics(); renderAttention(); renderRepos(); renderRunners(); renderEvents();
+  const busy = snapshot.runners.filter(r => r.state === "busy").length;
+  $("header-summary").textContent = `${snapshot.repos.length} repos · ${snapshot.runners.length} runners${busy ? ` · ${busy} active` : ""}`;
+  const degraded = Object.entries(snapshot.degraded || {});
+  $("degraded").style.display = degraded.length ? "block" : "none";
+  $("degraded").innerHTML = degraded.map(([key,value]) => `<b>${esc(key)}</b> · ${esc(value)}`).join("<br>");
 }
 
 async function refresh() {
-  let d;
-  try { d = await (await fetch("/api/state")).json(); }
-  catch { $("meta").textContent = "supervisor unreachable"; return; }
-
-  const busy = d.runners.filter((r) => r.state === "busy").length;
-  $("meta").textContent =
-    `${d.repos.length} repo${d.repos.length === 1 ? "" : "s"} · ${d.runners.length} runner${d.runners.length === 1 ? "" : "s"}` +
-    (busy ? ` · ${busy} running` : "");
-
-  const degraded = Object.entries(d.degraded || {});
-  $("degraded").style.display = degraded.length ? "block" : "none";
-  $("degraded").innerHTML = degraded.map(([k, v]) => `<strong>${esc(k)}</strong>: ${esc(v)}`).join(" · ");
-
-  $("tiles").innerHTML = d.repos.map((r) => `
-    <div class="tile">
-      <div class="repo" title="${esc(r.repo)}">${esc(r.repo)}</div>
-      <div class="fraction num">${r.live}<small> live · ${r.reserved} reserved · ${r.max} max</small></div>
-      <div class="sub">${esc(r.runtime)}</div>
-    </div>`).join("");
-
-  $("runners").innerHTML = d.runners.map((r) => `
-    <tr>
-      <td class="mono shrink" title="${esc(r.name)}">${esc(r.name.split("-").pop())}</td>
-      <td class="dim shrink">${esc(r.repo)}</td>
-      <td>${pill(r.state)}</td>
-      <td class="shrink">${jobCell(r.job)}</td>
-      <td class="dim num">${r.cpu_pct ? r.cpu_pct.toFixed(0) + "%" : ""}</td>
-      <td class="dim num">${fmtMem(r.mem_bytes)}</td>
-      <td class="dim num">${age(now() - r.created_at)}</td>
-    </tr>`).join("");
-  $("runners-empty").hidden = d.runners.length > 0;
-
-  const tails = d.runners.flatMap((r) =>
-    (r.log_tail || []).slice(-4).map((l) => r.name.split("-").pop() + " │ " + l));
-  $("tailbox").hidden = tails.length === 0;
-  $("tail").textContent = tails.join("\n");
-
-  $("jobs").innerHTML = (d.jobs || []).filter((j) => j.job_name).map((j) => `
-    <tr>
-      <td>${j.conclusion ? pill(j.conclusion) : pill("busy")}</td>
-      <td class="dim shrink">${esc(j.repo)}</td>
-      <td class="shrink" title="${esc(j.title || "")}">${j.head_sha ? `<a class="mono" href="https://github.com/${esc(j.repo)}/commit/${esc(j.head_sha)}" target="_blank" rel="noopener">${esc(j.head_sha.slice(0, 7))}</a> ${esc(j.title && j.title !== j.workflow ? j.title : "")}` : ""}</td>
-      <td class="shrink">${esc(j.workflow || "")}</td>
-      <td class="shrink">${j.html_url ? `<a href="${esc(j.html_url)}" target="_blank" rel="noopener">${esc(j.job_name)}</a>` : esc(j.job_name)}</td>
-      <td class="dim num">${j.started_at && j.completed_at ? age(j.completed_at - j.started_at) : ""}</td>
-      <td class="dim num">${j.completed_at ? age(now() - j.completed_at) + " ago" : (j.started_at ? "running" : "")}</td>
-      <td>${j.log_dir ? `<a href="/api/jobs/${j.gh_job_id}/logs" target="_blank" rel="noopener">logs</a>` : ""}${j.kept_image ? ` <span class="dim" title="homerunner exec ${j.gh_job_id}">· workspace kept</span>` : ""}</td>
-    </tr>`).join("");
-  $("jobs-empty").hidden = (d.jobs || []).some((j) => j.job_name);
+  $("refresh").classList.add("spin");
+  try {
+    const response = await fetch("/api/state", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    snapshot = await response.json(); render();
+    $("connection").classList.add("online"); $("connection").querySelector("span").textContent = "Supervisor online";
+  } catch (error) {
+    $("connection").classList.remove("online"); $("connection").querySelector("span").textContent = "Supervisor offline";
+    $("connection").title = error.message;
+  } finally { setTimeout(() => $("refresh").classList.remove("spin"), 250); }
 }
-
-function fmtBytes(b) {
-  if (!b) return "0";
-  if (b >= 1024 ** 3) return (b / 1024 ** 3).toFixed(1) + " GB";
-  if (b >= 1024 ** 2) return Math.round(b / 1024 ** 2) + " MB";
-  return Math.round(b / 1024) + " KB";
-}
-
 async function refreshDisk() {
-  let d;
-  try { d = await (await fetch("/api/disk")).json(); } catch { return; }
-  const rows = [
-    ["Captured job logs", d.job_logs.path, `${fmtBytes(d.job_logs.bytes)} (${d.job_logs.jobs} jobs)`, d.job_logs.retention],
-    ["Journal (SQLite)", d.journal.path, fmtBytes(d.journal.bytes), d.journal.retention],
-    ...d.images.list.map((i) => [
-      i.tag.startsWith("homerunner-kept") ? "Kept workspace" : "Runner image",
-      i.tag, i.size,
-      i.tag.startsWith("homerunner-kept") ? d.images.retention : "rebuild via `homerunner build-image`",
-    ]),
-    ...d.volumes.list.map((v) => ["Cache volume", v.name, v.size, d.volumes.retention]),
-  ];
-  document.getElementById("disk").innerHTML = rows.map(([what, where, size, note]) => `
-    <tr><td>${esc(what)}</td><td class="mono dim shrink" title="${esc(where)}">${esc(where)}</td>
-        <td class="dim num">${esc(size)}</td><td class="dim">${esc(note)}</td></tr>`).join("");
+  try {
+    const response = await fetch("/api/disk", { cache: "no-store" }); if (!response.ok) return;
+    const d = await response.json();
+    const rows = [
+      { label:"Captured job logs", path:d.job_logs.path, size:bytes(d.job_logs.bytes), note:`${d.job_logs.jobs} jobs · ${d.job_logs.retention}` },
+      { label:"Event journal", path:d.journal.path, size:bytes(d.journal.bytes), note:d.journal.retention },
+      ...d.images.list.map(i => ({ label:i.tag.startsWith("homerunner-kept") ? "Retained workspace" : "Runner image", path:i.tag, size:i.size, note:i.tag.startsWith("homerunner-kept") ? d.images.retention : "rebuild with homerunner build-image" })),
+      ...d.volumes.list.map(v => ({ label:"Dependency cache", path:v.name, size:v.size, note:d.volumes.retention }))
+    ];
+    $("storage-total").textContent = `${rows.length} ITEMS`;
+    $("storage-list").innerHTML = rows.map(r => `<div class="storage-row"><div class="storage-main"><b>${esc(r.label)}</b><span>${esc(r.size)}</span></div><div class="storage-path" title="${esc(r.path)}">${esc(r.path)}</div><div class="storage-note">${esc(r.note)}</div></div>`).join("");
+  } catch {}
 }
 
-refresh();
-refreshDisk();
-setInterval(refresh, 30000); // fallback; SSE below is the trigger
-setInterval(refreshDisk, 300000);
-new EventSource("/events").onmessage = refresh;
+$("refresh").onclick = () => { refresh(); refreshDisk(); };
+
+refresh(); refreshDisk();
+setInterval(refresh, 30000); setInterval(refreshDisk, 300000);
+const stream = new EventSource("/events");
+stream.onopen = () => { $("connection").title = "live event stream"; $("connection").classList.add("online"); };
+stream.onmessage = refresh;
+stream.onerror = () => { $("connection").title = "reconnecting event stream"; };
 </script>
 </body>
 </html>

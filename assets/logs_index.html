@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Logs · Homerunner</title>
+<style>
+  :root { --bg:#080b10; --panel:#0d1118; --panel-2:#111720; --panel-3:#151d28; --line:#202a38; --line-bright:#304055; --text:#e7edf5; --muted:#8290a3; --faint:#556274; --cyan:#5de4c7; --blue:#7aa2f7; --violet:#bb9af7; --amber:#e0af68; --red:#f7768e; --shadow:0 20px 60px rgba(0,0,0,.24); }
+  * { box-sizing:border-box; }
+  html { background:var(--bg); }
+  body { min-height:100vh; margin:0; color:var(--text); background:radial-gradient(circle at 73% -10%,rgba(122,162,247,.08),transparent 30rem),var(--bg); font:13px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  a { color:inherit; text-decoration:none; } button,input { font:inherit; }
+  .app { min-height:100vh; display:grid; grid-template-columns:200px minmax(0,1fr); }
+  aside { position:fixed; inset:0 auto 0 0; width:200px; padding:20px 13px; border-right:1px solid var(--line); background:rgba(8,11,16,.82); backdrop-filter:blur(22px); z-index:20; }
+  .brand { display:flex; align-items:center; gap:10px; font-weight:720; font-size:15px; letter-spacing:-.02em; white-space:nowrap; }
+  .brandmark { width:25px; height:25px; position:relative; border:1px solid rgba(93,228,199,.45); border-radius:7px; background:rgba(93,228,199,.07); }
+  .brandmark::before,.brandmark::after { content:""; position:absolute; background:var(--cyan); border-radius:1px; }
+  .brandmark::before { width:11px; height:2px; left:6px; top:7px; box-shadow:0 7px 0 var(--blue); }
+  .brandmark::after { width:2px; height:7px; left:11px; top:9px; }
+  .brand small { color:var(--faint); font:10px "SFMono-Regular",monospace; }
+  .side-nav { margin-top:24px; }
+  .side-nav a { height:36px; margin:2px 0; padding:0 10px; display:flex; align-items:center; gap:9px; border-radius:7px; color:var(--muted); }
+  .side-nav a:hover { color:var(--text); background:var(--panel-2); }
+  .side-nav a.active { color:var(--text); background:linear-gradient(90deg,rgba(93,228,199,.11),rgba(93,228,199,.02)); box-shadow:inset 2px 0 var(--cyan); }
+  .icon { width:15px; color:var(--cyan); font:12px "SFMono-Regular",monospace; }
+  .badge { min-width:19px; height:18px; padding:0 5px; margin-left:auto; display:grid; place-items:center; border-radius:9px; color:#ff9aae; background:rgba(247,118,142,.12); font:9px "SFMono-Regular",monospace; }
+  .side-status { position:absolute; left:13px; right:13px; bottom:17px; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
+  .connection { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11px; }
+  .connection i { width:7px; height:7px; border-radius:50%; background:var(--amber); box-shadow:0 0 9px currentColor; }
+  .connection.online i { background:var(--cyan); }
+  .content { grid-column:2; min-width:0; }
+  header { height:64px; position:sticky; top:0; z-index:10; display:flex; align-items:center; justify-content:space-between; padding:0 30px; border-bottom:1px solid var(--line); background:rgba(8,11,16,.75); backdrop-filter:blur(20px); }
+  .header-title { font-weight:650; }
+  .shortcut { color:var(--faint); font:10px "SFMono-Regular",monospace; }
+  .kbd { border:1px solid var(--line-bright); background:var(--panel); border-radius:4px; padding:1px 5px; }
+  main { max-width:1510px; padding:32px 34px 60px; margin:auto; }
+  .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:18px; }
+  .metric,.panel { border:1px solid var(--line); background:linear-gradient(145deg,rgba(17,23,32,.92),rgba(13,17,24,.96)); border-radius:11px; box-shadow:var(--shadow); }
+  .metric { padding:15px 17px; } .metric-label { color:var(--muted); font-size:10px; } .metric-value { margin-top:4px; font-size:22px; font-weight:680; letter-spacing:-.035em; } .metric-foot { color:var(--faint); font-size:9px; }
+  .layout { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:16px; align-items:start; }
+  .stack { display:grid; gap:16px; }
+  .panel { min-width:0; overflow:hidden; }
+  .panel-head { height:51px; padding:0 15px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line); }
+  .panel-title { display:flex; align-items:center; gap:8px; font-weight:680; font-size:12px; }
+  .panel-title i { width:6px; height:6px; border-radius:50%; background:var(--violet); box-shadow:0 0 8px var(--violet); }
+  .panel-meta { color:var(--faint); font:9px "SFMono-Regular",monospace; }
+  .toolbar { min-height:52px; display:flex; align-items:center; gap:8px; padding:9px 12px; border-bottom:1px solid var(--line); }
+  .search { flex:1; min-width:190px; position:relative; }
+  .search::before { content:"⌕"; position:absolute; left:10px; top:5px; color:var(--faint); font-size:14px; }
+  .search input { width:100%; height:32px; padding:0 30px; border:1px solid var(--line); border-radius:6px; outline:0; color:var(--text); background:rgba(8,11,16,.6); }
+  .search input:focus { border-color:rgba(93,228,199,.55); box-shadow:0 0 0 3px rgba(93,228,199,.06); }
+  .filters { display:flex; padding:2px; border:1px solid var(--line); border-radius:6px; }
+  .filters button { height:25px; padding:0 8px; border:0; border-radius:4px; background:transparent; color:var(--faint); cursor:pointer; font-size:10px; }
+  .filters button.active { color:var(--text); background:var(--panel-3); }
+  table { width:100%; min-width:760px; border-collapse:collapse; table-layout:fixed; }
+  th:nth-child(1){width:96px} th:nth-child(2){width:26%} th:nth-child(4){width:22%} th:nth-child(5){width:80px} th:nth-child(6){width:112px}
+  th { padding:9px 13px; color:var(--faint); text-align:left; text-transform:uppercase; letter-spacing:.1em; font-size:9px; white-space:nowrap; background:rgba(8,11,16,.32); }
+  td { padding:11px 13px; border-top:1px solid rgba(32,42,56,.72); white-space:nowrap; vertical-align:middle; }
+  tr:hover { background:rgba(122,162,247,.035); }
+  tr.failed { background:linear-gradient(90deg,rgba(247,118,142,.045),transparent 65%); }
+  .compact { max-width:240px; overflow:hidden; text-overflow:ellipsis; }
+  .muted { color:var(--muted); } .faint { color:var(--faint); } .mono { font-family:"SFMono-Regular",Consolas,monospace; font-size:11px; }
+  .status { display:inline-flex; align-items:center; gap:6px; height:22px; padding:0 7px; border-radius:4px; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); background:rgba(130,144,163,.08); }
+  .status::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; }
+  .status.failure { color:var(--red); background:rgba(247,118,142,.09); } .status.success,.status.listening { color:var(--cyan); background:rgba(93,228,199,.08); } .status.busy { color:var(--amber); background:rgba(224,175,104,.09); }
+  .open { height:28px; padding:0 9px; display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line); border-radius:5px; color:var(--blue); background:var(--panel-2); }
+  .open:hover { color:var(--text); border-color:var(--line-bright); }
+  .failed .open { color:#ff9aae; border-color:rgba(247,118,142,.3); background:rgba(247,118,142,.08); }
+  .live-list { padding:5px 0; }
+  .live-row { display:block; padding:12px 15px; border-top:1px solid rgba(32,42,56,.7); }
+  .live-row:first-child { border-top:0; } .live-row:hover { background:rgba(122,162,247,.035); }
+  .live-top { display:flex; align-items:center; justify-content:space-between; gap:9px; } .runner-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:620; }
+  .live-job { margin-top:4px; color:var(--muted); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .help { padding:14px 15px; color:var(--muted); font-size:11px; }
+  .help p { margin:0 0 10px; } .help p:last-child { margin:0; } .help b { color:var(--text); font-weight:600; }
+  .empty { padding:27px 15px; color:var(--faint); text-align:center; }
+  @media(max-width:1200px){.layout{grid-template-columns:1fr}.stack{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:760px){.app{display:block}aside{display:none}.content{grid-column:auto}header{padding:0 16px}main{padding:24px 15px 45px}.metrics{grid-template-columns:repeat(2,1fr)}.layout,.stack{grid-template-columns:1fr}.filters{overflow:auto}.shortcut{display:none}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand"><span class="brandmark"></span>homerunner <small>v0.2</small></div>
+    <nav class="side-nav"><a href="/"><span class="icon">⌂</span>Overview</a><a class="active" href="/logs"><span class="icon">⌁</span>Logs <span class="badge" id="failed-badge" hidden></span></a></nav>
+    <div class="side-status"><div class="connection" id="connection"><i></i><span>Connecting</span></div></div>
+  </aside>
+  <div class="content">
+    <header><div class="header-title">Logs</div><div class="shortcut"><span class="kbd">/</span> search</div></header>
+    <main>
+      <div class="metrics">
+        <div class="metric"><div class="metric-label">Jobs</div><div class="metric-value" id="captured">—</div></div>
+        <div class="metric"><div class="metric-label">Failed</div><div class="metric-value" id="failures">—</div></div>
+        <div class="metric"><div class="metric-label">Workspaces</div><div class="metric-value" id="workspaces">—</div></div>
+        <div class="metric"><div class="metric-label">Log storage</div><div class="metric-value" id="storage">—</div><div class="metric-foot" id="storage-foot"></div></div>
+      </div>
+      <div class="layout">
+        <section class="panel">
+          <div class="panel-head"><div class="panel-title"><i></i>Jobs</div><div class="panel-meta" id="job-meta"></div></div>
+          <div class="toolbar"><label class="search"><input id="search" type="search" placeholder="Search logs…" autocomplete="off"></label><div class="filters" id="filters"><button class="active" data-filter="all">All</button><button data-filter="failure">Failed</button><button data-filter="success">Passed</button><button data-filter="busy">Running</button></div></div>
+          <div style="overflow-x:auto"><table><thead><tr><th>Result</th><th>Repository</th><th>Workflow / job</th><th>Revision</th><th>Finished</th><th></th></tr></thead><tbody id="rows"></tbody></table></div><div class="empty" id="empty" hidden>No captured logs match this view.</div>
+        </section>
+        <div class="stack">
+          <section class="panel"><div class="panel-head"><div class="panel-title"><i style="background:var(--cyan);box-shadow:0 0 8px var(--cyan)"></i>Live streams</div><div class="panel-meta" id="live-meta"></div></div><div class="live-list" id="live-list"></div><div class="empty" id="live-empty" hidden>No live runners.</div></section>
+          <section class="panel"><div class="panel-head"><div class="panel-title"><i style="background:var(--blue);box-shadow:0 0 8px var(--blue)"></i>Shortcuts</div></div><div class="help"><p><b>⌘/Ctrl + F</b> Search</p><p><b>Enter / Shift + Enter</b> Next / previous</p></div></section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id); const esc=value=>{const n=document.createElement("div");n.textContent=value??"";return n.innerHTML}; const now=()=>Date.now()/1000;
+let state={jobs:[],runners:[]},filter="all";
+function age(s){if(s<60)return Math.round(s)+"s";if(s<3600)return Math.round(s/60)+"m";if(s<86400)return (s/3600).toFixed(s<7200?1:0)+"h";return Math.round(s/86400)+"d"}
+function status(value){const state=value||"busy",label={success:"Passed",failure:"Failed",busy:"Running",listening:"Ready",cancelled:"Cancelled"}[state]||state;return `<span class="status ${esc(state)}">${esc(label)}</span>`}
+function render(){
+  const all=state.jobs.filter(j=>j.job_name&&j.log_dir),failures=all.filter(j=>j.conclusion==="failure"),q=$("search").value.trim().toLowerCase();
+  const jobs=all.filter(j=>(filter==="all"||(j.conclusion||"busy")===filter)&&(!q||[j.repo,j.workflow,j.job_name,j.head_branch,j.head_sha,j.title].join(" ").toLowerCase().includes(q)));
+  $("captured").textContent=all.length;$("failures").textContent=failures.length;$("workspaces").textContent=all.filter(j=>j.kept_image).length;$("failed-badge").hidden=!failures.length;$("failed-badge").textContent=failures.length;$("job-meta").textContent=`${jobs.length} OF ${all.length}`;
+  $("rows").innerHTML=jobs.map(j=>{const result=j.conclusion||"busy";return `<tr class="${result==="failure"?"failed":""}"><td>${status(result)}</td><td class="compact muted" title="${esc(j.repo)}">${esc(j.repo)}</td><td class="compact"><div>${esc(j.workflow||"")}</div><div class="faint">${esc(j.job_name||"")}</div></td><td class="compact"><span class="mono" style="color:var(--violet)">${esc(j.head_sha?.slice(0,7)||"—")}</span><span class="faint"> · ${esc(j.head_branch||"")}</span></td><td class="muted">${j.completed_at?age(now()-j.completed_at)+" ago":"running"}</td><td><a class="open" href="/jobs/${j.gh_job_id}/logs">⌁ ${result==="failure"?"Inspect logs":"Open logs"}</a></td></tr>`}).join("");$("empty").hidden=jobs.length>0;
+  $("live-meta").textContent=`${state.runners.length} RUNNERS`;$("live-list").innerHTML=state.runners.map(r=>`<a class="live-row" href="/runners/${encodeURIComponent(r.name)}/logs"><div class="live-top"><span class="runner-name">${esc(r.name.split("-").slice(-2).join("-"))}</span>${status(r.state)}</div><div class="live-job">${esc(r.job?.job_name||r.repo||"Waiting for work")}</div></a>`).join("");$("live-empty").hidden=state.runners.length>0;
+}
+async function refresh(){try{const res=await fetch("/api/state",{cache:"no-store"});if(!res.ok)throw new Error();state=await res.json();render();$("connection").classList.add("online");$("connection").querySelector("span").textContent="Supervisor online"}catch{$("connection").classList.remove("online");$("connection").querySelector("span").textContent="Supervisor offline"}}
+async function disk(){try{const d=await(await fetch("/api/disk",{cache:"no-store"})).json(),b=d.job_logs.bytes;$("storage").textContent=b>=1024**2?(b/1024**2).toFixed(1)+" MB":Math.round(b/1024)+" KB";$("storage-foot").textContent=d.job_logs.retention}catch{}}
+$("search").oninput=render;$("filters").onclick=e=>{if(!e.target.dataset.filter)return;filter=e.target.dataset.filter;document.querySelectorAll("#filters button").forEach(b=>b.classList.toggle("active",b===e.target));render()};document.addEventListener("keydown",e=>{if(e.key==="/"&&!/input|textarea/i.test(document.activeElement.tagName)){e.preventDefault();$("search").focus()}});
+refresh();disk();setInterval(refresh,30000);const stream=new EventSource("/events");stream.onmessage=refresh;stream.onopen=()=>$("connection").classList.add("online");
+</script>
+</body>
+</html>

@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Logs · Homerunner</title>
+<style>
+  :root { --bg:#080b10; --panel:#0d1118; --panel-2:#111720; --panel-3:#151d28; --line:#202a38; --line-bright:#304055; --text:#dbe3ed; --muted:#8290a3; --faint:#536071; --cyan:#5de4c7; --blue:#7aa2f7; --violet:#bb9af7; --amber:#e0af68; --red:#f7768e; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; color:var(--text); background:var(--bg); font:12px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; display:flex; flex-direction:column; overflow:hidden; }
+  button, input { font:inherit; }
+  a { color:inherit; text-decoration:none; }
+  header { min-height:64px; padding:10px 18px; display:flex; align-items:center; gap:14px; border-bottom:1px solid var(--line); background:rgba(13,17,24,.96); }
+  .back { width:33px; height:33px; border:1px solid var(--line); border-radius:7px; display:grid; place-items:center; color:var(--muted); font-size:17px; }
+  .back:hover { color:var(--text); border-color:var(--line-bright); }
+  .identity { min-width:0; flex:1; }
+  .title-row { display:flex; align-items:center; gap:9px; min-width:0; }
+  h1 { margin:0; font-size:13px; font-weight:680; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .meta { margin-top:3px; color:var(--faint); font:10px "SFMono-Regular",Consolas,monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .badge { height:21px; padding:0 7px; border-radius:4px; display:inline-flex; align-items:center; gap:5px; color:var(--muted); background:rgba(130,144,163,.08); font-size:9px; font-weight:720; letter-spacing:.06em; text-transform:uppercase; }
+  .badge::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; }
+  .badge.success { color:var(--cyan); background:rgba(93,228,199,.08); }
+  .badge.listening { color:var(--cyan); background:rgba(93,228,199,.08); }
+  .badge.failure { color:var(--red); background:rgba(247,118,142,.09); }
+  .badge.busy { color:var(--amber); background:rgba(224,175,104,.09); }
+  .badge.busy::before { animation:pulse 1.3s infinite; }
+  @keyframes pulse { 50% { opacity:.25; } }
+  .head-actions { display:flex; gap:7px; }
+  .btn { height:31px; padding:0 10px; border:1px solid var(--line); border-radius:6px; color:var(--muted); background:var(--panel-2); cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+  .btn:hover { color:var(--text); border-color:var(--line-bright); }
+  .btn.primary { color:var(--cyan); border-color:rgba(93,228,199,.27); background:rgba(93,228,199,.07); }
+  .btn[disabled] { opacity:.35; pointer-events:none; }
+
+  .toolbar { min-height:51px; padding:9px 18px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; border-bottom:1px solid var(--line); background:var(--panel); }
+  .search { position:relative; width:min(440px, 42vw); min-width:240px; }
+  .search input { width:100%; height:32px; padding:0 104px 0 29px; border:1px solid var(--line-bright); outline:0; border-radius:6px; background:#080b10; color:var(--text); }
+  .search input:focus { border-color:rgba(93,228,199,.65); box-shadow:0 0 0 3px rgba(93,228,199,.06); }
+  .search::before { content:"⌕"; position:absolute; left:10px; top:6px; color:var(--faint); font-size:14px; }
+  .matches { position:absolute; right:63px; top:8px; color:var(--faint); font:10px "SFMono-Regular",monospace; }
+  .search-nav { position:absolute; right:4px; top:4px; display:flex; }
+  .search-nav button { width:27px; height:24px; padding:0; border:0; border-left:1px solid var(--line); color:var(--muted); background:transparent; cursor:pointer; }
+  .search-nav button:hover { color:var(--cyan); }
+  .toggle { height:30px; padding:0 9px; border:1px solid var(--line); border-radius:6px; display:inline-flex; align-items:center; gap:6px; color:var(--muted); cursor:pointer; user-select:none; }
+  .toggle:hover { border-color:var(--line-bright); color:var(--text); }
+  .toggle input { appearance:none; width:8px; height:8px; margin:0; border:1px solid var(--faint); border-radius:2px; }
+  .toggle input:checked { background:var(--cyan); border-color:var(--cyan); box-shadow:0 0 6px rgba(93,228,199,.4); }
+  .filters { display:flex; border:1px solid var(--line); padding:2px; border-radius:6px; margin-left:auto; }
+  .filters button { height:24px; padding:0 8px; border:0; border-radius:4px; background:transparent; color:var(--faint); cursor:pointer; font-size:10px; }
+  .filters button.active { color:var(--text); background:var(--panel-3); }
+
+  .stats { min-height:31px; padding:0 18px; display:flex; align-items:center; gap:16px; border-bottom:1px solid var(--line); background:rgba(8,11,16,.75); color:var(--faint); font:10px "SFMono-Regular",monospace; }
+  .stats b { color:var(--muted); font-weight:500; }
+  .live-indicator { color:var(--cyan); display:none; align-items:center; gap:6px; }
+  .live-indicator.on { display:flex; }
+  .live-indicator i { width:5px; height:5px; border-radius:50%; background:var(--cyan); box-shadow:0 0 7px var(--cyan); animation:pulse 1.3s infinite; }
+  .render-note { margin-left:auto; color:var(--amber); }
+
+  .viewer { flex:1; min-height:0; overflow:auto; background:linear-gradient(90deg,#0a0d12 0,#0a0d12 60px,#080b10 60px); scroll-behavior:smooth; }
+  .log { min-width:max-content; padding:9px 0 50vh; counter-reset:line; }
+  .line { display:grid; grid-template-columns:60px minmax(0,1fr); min-height:21px; font:11.5px/21px "SFMono-Regular",Consolas,"Liberation Mono",monospace; }
+  .line:hover { background:rgba(122,162,247,.045); }
+  .line.hit { background:rgba(224,175,104,.055); }
+  .line.current { background:rgba(93,228,199,.095); box-shadow:inset 2px 0 var(--cyan); }
+  .line.error .code { color:#ff93a5; }
+  .line.warning .code { color:#e8bd7a; }
+  .ln { color:#3f4957; text-align:right; padding-right:13px; user-select:none; position:sticky; left:0; background:#0a0d12; }
+  .code { white-space:pre; padding:0 18px 0 12px; color:#aeb8c6; tab-size:4; }
+  .wrap .log { min-width:0; }
+  .wrap .code { white-space:pre-wrap; overflow-wrap:anywhere; }
+  mark { color:#0b0d11; background:var(--amber); border-radius:2px; padding:0 1px; }
+  .json-key { color:var(--blue); } .json-string { color:var(--cyan); } .json-number { color:var(--violet); } .json-bool { color:var(--amber); } .json-null { color:var(--red); }
+  .loading, .error-state { height:100%; display:grid; place-items:center; color:var(--faint); font:11px "SFMono-Regular",monospace; }
+  .error-state { color:var(--red); }
+  .toast { position:fixed; right:18px; bottom:18px; padding:9px 12px; border:1px solid var(--line-bright); border-radius:7px; background:var(--panel-3); opacity:0; transform:translateY(10px); transition:.18s; pointer-events:none; }
+  .toast.show { opacity:1; transform:none; }
+  @media(max-width:800px) { header { padding:9px 10px; } .head-actions .label { display:none; } .toolbar { padding:8px 10px; } .search { width:100%; } .filters { margin-left:0; } .toggle:nth-of-type(2) { display:none; } .stats { padding:0 10px; overflow:hidden; } }
+</style>
+</head>
+<body>
+<header>
+  <a class="back" href="/logs" aria-label="Back to logs">‹</a>
+  <div class="identity"><div class="title-row"><h1 id="title">Loading…</h1><span class="badge busy" id="status">Loading</span></div><div class="meta" id="meta"></div></div>
+  <div class="head-actions"><a class="btn" id="external" target="_blank" rel="noopener" hidden>↗ <span class="label">GitHub</span></a><a class="btn" id="raw" target="_blank" hidden>{ } <span class="label">Raw</span></a><button class="btn" id="copy">⧉ <span class="label">Copy</span></button><button class="btn primary" id="download">↓ <span class="label">Download</span></button></div>
+</header>
+<div class="toolbar">
+  <label class="search"><input id="query" type="search" placeholder="Find in logs…" autocomplete="off" spellcheck="false"><span class="matches" id="matches"></span><span class="search-nav"><button id="prev" title="Previous match (Shift+Enter)">↑</button><button id="next" title="Next match (Enter)">↓</button></span></label>
+  <label class="toggle" title="Match exact letter case"><input type="checkbox" id="case"> Aa</label>
+  <label class="toggle" title="Treat search as a regular expression"><input type="checkbox" id="regex"> .*</label>
+  <label class="toggle" title="Wrap long lines"><input type="checkbox" id="wrap"> Wrap</label>
+  <label class="toggle" title="Pretty-print lines containing valid JSON"><input type="checkbox" id="pretty"> JSON</label>
+  <div class="filters" id="filters"><button class="active" data-filter="all">All</button><button data-filter="error">Errors</button><button data-filter="warning">Warnings</button><button data-filter="json">JSON</button></div>
+</div>
+<div class="stats"><span><b id="line-count">—</b> lines</span><span><b id="byte-count">—</b></span><span><b id="json-count">—</b> JSON records</span><span class="live-indicator" id="live"><i></i>STREAMING</span><span class="render-note" id="render-note"></span></div>
+<main class="viewer" id="viewer"><div class="loading">Loading…</div></main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = value => { const n=document.createElement("div"); n.textContent=value??""; return n.innerHTML; };
+const safeExternal = value => { try { const url=new URL(value); return url.protocol==="https:" ? url.href : null; } catch { return null; } };
+const stripAnsi = value => value.replace(/[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
+const path = location.pathname;
+const jobMatch = path.match(/^\/jobs\/(\d+)\/logs\/?$/);
+const runnerMatch = path.match(/^\/runners\/([^/]+)\/logs\/?$/);
+const mode = jobMatch ? "job" : "runner";
+const sourceId = jobMatch ? jobMatch[1] : decodeURIComponent(runnerMatch?.[1] || "");
+let rawText="", lines=[], info=null, activeFilter="all", matches=[], matchIndex=-1, jsonLines=new Set(), source=null;
+const MAX_RENDER = 6000;
+
+function humanBytes(value) { if(value>=1024**2)return (value/1024**2).toFixed(1)+" MB"; if(value>=1024)return Math.round(value/1024)+" KB"; return value+" B"; }
+function lineKind(line) { if (/##\[error|\b(error|fatal|failed|failure|exception|panic)\b/i.test(line)) return "error"; if (/##\[warning|\bwarn(ing)?\b/i.test(line)) return "warning"; return "plain"; }
+function parseJson(line) { const clean=line.trim(); if(!(clean.startsWith("{")&&clean.endsWith("}")) && !(clean.startsWith("[")&&clean.endsWith("]"))) return null; try{return JSON.parse(clean)}catch{return null} }
+function jsonHtml(value) { return esc(JSON.stringify(value, null, $("pretty").checked ? 2 : 0)).replace(/(&quot;(?:\\.|[^&])*?&quot;)(\s*:)?|\b(true|false)\b|\b(null)\b|-?\d+(?:\.\d+)?(?:e[+\-]?\d+)?/gi,(token,key,stringBool,nullValue)=>{ if(key) return `<span class="${stringBool ? "json-key" : "json-string"}">${key}</span>${stringBool||""}`; if(/true|false/i.test(token))return `<span class="json-bool">${token}</span>`; if(token==="null")return `<span class="json-null">${token}</span>`; return `<span class="json-number">${token}</span>`; }); }
+function searchRegex() { const q=$("query").value; if(!q)return null; try { return new RegExp($("regex").checked ? q : q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"), $("case").checked ? "g" : "gi"); } catch { return false; } }
+function highlighted(line) { const rx=searchRegex(), parsed=parseJson(line), display=parsed!==null&&$("pretty").checked?JSON.stringify(parsed,null,2):line; if(rx===false)return esc(display); if(!rx)return parsed===null?esc(display):jsonHtml(parsed); let cursor=0,out="",m; rx.lastIndex=0; while((m=rx.exec(display))!==null){out+=esc(display.slice(cursor,m.index))+`<mark>${esc(m[0])}</mark>`;cursor=m.index+m[0].length;if(!m[0].length)rx.lastIndex++;} return out+esc(display.slice(cursor)); }
+function visibleIndexes() { const out=[]; for(let i=0;i<lines.length;i++){ const kind=lineKind(lines[i]); if(activeFilter==="all"||activeFilter===kind||(activeFilter==="json"&&jsonLines.has(i)))out.push(i); } return out; }
+function updateSearch() { const rx=searchRegex(); matches=[]; matchIndex=-1; $("query").setCustomValidity(rx===false ? "Invalid regular expression" : ""); if(rx){ lines.forEach((line,i)=>{rx.lastIndex=0;if(rx.test(line))matches.push(i)}); if(matches.length)matchIndex=0; } $("matches").textContent=rx===false?"invalid":matches.length?`1 / ${matches.length}`:""; render(); if(matches.length)jumpToCurrent(); }
+function render() {
+  jsonLines=new Set(); lines.forEach((line,i)=>{if(parseJson(line)!==null)jsonLines.add(i)});
+  const visible=visibleIndexes(); let shown=visible, note="";
+  if(visible.length>MAX_RENDER){ const anchor=matchIndex>=0 ? matches[matchIndex] : visible[visible.length-1]; let pos=Math.max(0,visible.indexOf(anchor)); const start=Math.max(0,Math.min(visible.length-MAX_RENDER,pos-Math.floor(MAX_RENDER/2))); shown=visible.slice(start,start+MAX_RENDER); note=`Showing ${shown.length.toLocaleString()} of ${visible.length.toLocaleString()} lines`; }
+  const current=matchIndex>=0?matches[matchIndex]:-1, matchSet=new Set(matches);
+  $("viewer").innerHTML=`<div class="log">${shown.map(i=>`<div class="line ${lineKind(lines[i])} ${matchSet.has(i)?"hit":""} ${i===current?"current":""}" data-line="${i}"><span class="ln">${i+1}</span><span class="code">${highlighted(lines[i])||" "}</span></div>`).join("")}</div>`;
+  $("viewer").classList.toggle("wrap",$("wrap").checked); $("render-note").textContent=note;
+  $("line-count").textContent=lines.length.toLocaleString(); $("byte-count").textContent=humanBytes(new Blob([rawText]).size); $("json-count").textContent=jsonLines.size.toLocaleString();
+}
+function jump(direction=0) { if(!matches.length)return; matchIndex=(matchIndex+direction+matches.length)%matches.length; $("matches").textContent=`${matchIndex+1} / ${matches.length}`; render(); jumpToCurrent(); }
+function jumpToCurrent(){ requestAnimationFrame(()=>document.querySelector(".line.current")?.scrollIntoView({block:"center"})); }
+function toast(msg){$("toast").textContent=msg;$("toast").classList.add("show");clearTimeout(toast.timer);toast.timer=setTimeout(()=>$("toast").classList.remove("show"),1500)}
+function updateLines(text){rawText=text;lines=stripAnsi(text).replace(/\r\n/g,"\n").split("\n");if(lines.at(-1)==="")lines.pop();render();}
+function setHeader(data){
+  info=data; const state=data.conclusion||data.state||"busy"; $("status").className=`badge ${esc(state)}`; $("status").textContent={success:"Passed",failure:"Failed",busy:"Running",listening:"Ready",cancelled:"Cancelled"}[state]||state;
+  if(mode==="job"){$("title").textContent=`${data.workflow||"Workflow"} / ${data.job_name||"Job"}`;$("meta").textContent=[data.repo,data.head_branch,data.head_sha?.slice(0,9),`job ${sourceId}`].filter(Boolean).join("  ·  "); const external=safeExternal(data.html_url);if(external){$("external").href=external;$("external").hidden=false;} $("raw").href=`/api/jobs/${sourceId}/logs`;$("raw").hidden=false;document.title=`${data.job_name||"Job"} logs · Homerunner`;}
+  else {$("title").textContent=data.name||sourceId;$("meta").textContent=[data.repo,data.job?.workflow,data.job?.job_name,"live runner"].filter(Boolean).join("  ·  ");document.title=`${data.name||"Runner"} logs · Homerunner`;}
+}
+async function loadJob(){ try{const [metaRes,logsRes]=await Promise.all([fetch(`/api/jobs/${sourceId}`),fetch(`/api/jobs/${sourceId}/logs`)]);if(!metaRes.ok)throw new Error(await metaRes.text());if(!logsRes.ok)throw new Error(await logsRes.text());setHeader(await metaRes.json());updateLines(await logsRes.text());}catch(e){$("viewer").innerHTML=`<div class="error-state">${esc(e.message||"Could not load logs")}</div>`;} }
+async function loadRunner(){ try{const response=await fetch("/api/state");if(!response.ok)throw new Error("Supervisor state unavailable");const state=await response.json();const runner=state.runners.find(r=>r.name===sourceId);if(!runner)throw new Error(`Runner ${sourceId} is no longer live`);setHeader(runner);updateLines((runner.log_tail||[]).join("\n"));$("live").classList.add("on");$("download").disabled=false;source=new EventSource(`/api/runners/${encodeURIComponent(sourceId)}/logs`);source.onmessage=e=>{try{const line=JSON.parse(e.data);rawText+=(rawText?"\n":"")+line;lines.push(stripAnsi(line));render();if($("viewer").scrollHeight-$("viewer").scrollTop-$("viewer").clientHeight<120)$("viewer").scrollTop=$("viewer").scrollHeight;}catch{}};source.onerror=()=>{$("live").innerHTML="<i></i>RECONNECTING"};}catch(e){$("viewer").innerHTML=`<div class="error-state">${esc(e.message)}</div>`;} }
+
+$("query").addEventListener("input",updateSearch); $("case").onchange=updateSearch; $("regex").onchange=updateSearch; $("wrap").onchange=render; $("pretty").onchange=render;
+$("next").onclick=()=>jump(1); $("prev").onclick=()=>jump(-1);
+$("filters").onclick=e=>{if(!e.target.dataset.filter)return;activeFilter=e.target.dataset.filter;document.querySelectorAll("#filters button").forEach(b=>b.classList.toggle("active",b===e.target));render();};
+$("copy").onclick=async()=>{await navigator.clipboard.writeText(rawText);toast("Logs copied")};
+$("download").onclick=()=>{const blob=new Blob([rawText],{type:"text/plain"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`homerunner-${mode}-${sourceId}.log`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);};
+document.addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="f"){e.preventDefault();$("query").focus();$("query").select();}else if(e.key==="Enter"&&document.activeElement===$("query")){e.preventDefault();jump(e.shiftKey?-1:1)}else if(e.key==="Escape"&&document.activeElement===$("query")){e.preventDefault();$("query").value="";updateSearch();$("query").blur();}});
+if(mode==="job")loadJob();else loadRunner();
+</script>
+</body>
+</html>

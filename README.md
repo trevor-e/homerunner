@@ -88,7 +88,10 @@ Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 
 Failed jobs keep their workspace as a local image (`keep_failed_workspaces`,
 default 2, oldest GC'd). The dashboard links each job's captured logs and
-marks kept workspaces.
+marks kept workspaces. A dedicated `/logs` workspace collects captured job
+logs and live runner streams. Its viewer supports plain-text and regex search,
+match navigation, severity filters, line wrapping, JSON detection and
+pretty-printing, copy/download actions, and live streaming from active runners.
 
 ## Notes
 

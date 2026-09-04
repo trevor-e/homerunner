@@ -40,12 +40,30 @@ GitHub-hosted runners.
 
 ## Setup
 
+Download the archive for your platform from the
+[latest GitHub release](https://github.com/trevor-e/homerunner/releases/latest),
+extract it, and put `homerunner` (or `homerunner.exe`) somewhere on your
+`PATH`. Release assets are available for Apple Silicon Macs, Intel Macs, and
+64-bit Windows, with a SHA-256 checksum beside each archive.
+
+On macOS, `/usr/local/bin` gives the launchd agent a stable executable path:
+
+```sh
+sudo install homerunner /usr/local/bin/homerunner
+```
+
+Then configure the runtime:
+
 ```sh
 brew install gh && gh auth login      # token: repo scope
-cargo install --path .
 homerunner init --repo you/yourrepo   # writes config, builds the runner image, checks access
 homerunner install                    # launchd agent (or `run` for foreground)
 ```
+
+Windows support is currently experimental and requires Docker Desktop using
+Linux containers. Run `homerunner run` in the foreground or arrange it with
+your preferred service manager; `homerunner install` is launchd-only. To build
+from source instead, install Rust and run `cargo install --path .`.
 
 The Dockerfile is embedded in the binary, so `init` on a fresh machine needs
 nothing but Docker (or apple/container) and `gh`. `init` picks defaults by

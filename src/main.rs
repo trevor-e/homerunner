@@ -150,7 +150,6 @@ async fn main() -> Result<()> {
             let image = job["kept_image"].as_str().context(
                 "no kept workspace for this job (only failed jobs are kept, per keep_failed_workspaces)",
             )?;
-            use std::os::unix::process::CommandExt;
             let mut docker = StdCommand::new("docker");
             docker.args(["run", "--rm"]);
             match cmd.split_first() {
@@ -162,8 +161,7 @@ async fn main() -> Result<()> {
                     docker.args(["--entrypoint", prog, image]).args(rest);
                 }
             }
-            let err = docker.exec();
-            anyhow::bail!("docker run failed: {err}")
+            run_docker_exec(docker)
         }
         Cmd::Events { json } => events_cli(cfg, json).await,
         Cmd::Mcp => mcp::serve(cfg).await,
@@ -299,12 +297,8 @@ async fn init(path: &std::path::Path, repos: &[String], rebuild: bool) -> Result
         for repo in repos {
             anyhow::ensure!(repo.contains('/'), "--repo must be owner/name, got: {repo}");
         }
-        // Arch-aware defaults: Apple Silicon gets the VM-per-job runtime.
-        let (runtime, arch) = if std::env::consts::ARCH == "aarch64" {
-            ("apple-container", "arm64")
-        } else {
-            ("docker", "x64")
-        };
+        // Apple Silicon gets the VM-per-job runtime. Other platforms use Docker.
+        let (runtime, arch) = platform_defaults(std::env::consts::OS, std::env::consts::ARCH);
         let repo_blocks: String = repos
             .iter()
             .map(|repo| format!("\n[[repos]]\nrepo = \"{repo}\"\nreserved = 1\nmax = 2\n"))
@@ -331,9 +325,13 @@ async fn init(path: &std::path::Path, repos: &[String], rebuild: bool) -> Result
     }
 
     doctor(cfg).await?;
-    println!(
-        "\nready — `homerunner install` for the launchd agent, or `homerunner run` for foreground"
-    );
+    if cfg!(target_os = "macos") {
+        println!(
+            "\nready — `homerunner install` for the launchd agent, or `homerunner run` for foreground"
+        );
+    } else {
+        println!("\nready — run `homerunner run` in the foreground");
+    }
     Ok(())
 }
 
@@ -471,6 +469,31 @@ async fn doctor(cfg: config::Config) -> Result<()> {
     Ok(())
 }
 
+fn platform_defaults(os: &str, arch: &str) -> (&'static str, &'static str) {
+    let runner_arch = if arch == "aarch64" { "arm64" } else { "x64" };
+    let runtime = if os == "macos" && arch == "aarch64" {
+        "apple-container"
+    } else {
+        "docker"
+    };
+    (runtime, runner_arch)
+}
+
+#[cfg(unix)]
+fn run_docker_exec(mut docker: StdCommand) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let err = docker.exec();
+    anyhow::bail!("docker run failed: {err}")
+}
+
+#[cfg(windows)]
+fn run_docker_exec(mut docker: StdCommand) -> Result<()> {
+    let status = docker.status().context("failed to run docker")?;
+    anyhow::ensure!(status.success(), "docker run exited with {status}");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn install(config_path: &std::path::Path) -> Result<()> {
     let exe = std::env::current_exe()?;
     let log_dir = config::expand_tilde("~/Library/Logs/homerunner");
@@ -522,4 +545,27 @@ fn install(config_path: &std::path::Path) -> Result<()> {
     println!("installed + started {PLIST_LABEL}");
     println!("logs: {}", log_dir.join("homerunner.log").display());
     Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install(_config_path: &std::path::Path) -> Result<()> {
+    anyhow::bail!(
+        "automatic service installation is currently supported only on macOS; run `homerunner run` in the foreground"
+    )
+}
+
+#[cfg(test)]
+mod platform_tests {
+    use super::platform_defaults;
+
+    #[test]
+    fn chooses_platform_defaults() {
+        assert_eq!(
+            platform_defaults("macos", "aarch64"),
+            ("apple-container", "arm64")
+        );
+        assert_eq!(platform_defaults("macos", "x86_64"), ("docker", "x64"));
+        assert_eq!(platform_defaults("windows", "x86_64"), ("docker", "x64"));
+        assert_eq!(platform_defaults("windows", "aarch64"), ("docker", "arm64"));
+    }
 }

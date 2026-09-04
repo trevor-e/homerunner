@@ -161,7 +161,10 @@ pub fn load(path: &Path) -> Result<Config> {
             reserved: o.reserved.or(d.reserved).unwrap_or(1),
             max: o.max.or(d.max).unwrap_or(2),
             job_timeout_min: o.job_timeout_min.or(d.job_timeout_min).unwrap_or(120),
-            caffeinate: o.caffeinate.or(d.caffeinate).unwrap_or(true),
+            caffeinate: o
+                .caffeinate
+                .or(d.caffeinate)
+                .unwrap_or(cfg!(target_os = "macos")),
             registry_mirror: o
                 .registry_mirror
                 .clone()

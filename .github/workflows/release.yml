@@ -36,7 +36,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
       - name: Verify tag matches package version
@@ -71,7 +71,7 @@ jobs:
           Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
           Remove-Item "dist/$name" -Recurse
           $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name.zip" | Set-Content "dist/$name.zip.sha256"
+          "$hash  $name.zip" | Set-Content "dist/$name.zip.sha256" -NoNewline
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
@@ -83,7 +83,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
       - uses: actions/download-artifact@v4

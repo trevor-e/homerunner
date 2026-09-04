@@ -436,6 +436,7 @@ mod tests {
         assert!(SEARCH_HTML.contains("role=\"combobox\""));
         assert!(SEARCH_HTML.contains("/api/logs/search/suggestions"));
         for page in [INDEX_HTML, LOGS_INDEX_HTML, ANALYTICS_HTML, SEARCH_HTML] {
+            assert!(page.contains("homerunner <small>v0.4</small>"));
             assert!(page.matches("<span class=\"icon\"><svg").count() >= 4);
             assert!(!page.contains("<span class=\"icon\">⌂"));
             assert!(!page.contains("<span class=\"icon\">⌁"));

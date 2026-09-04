@@ -140,10 +140,17 @@ pub struct App {
     /// Reap outcomes for jobs whose id enrichment hadn't resolved yet,
     /// keyed by runner name; applied (and drained) when enrichment lands.
     pending_outcomes: Mutex<HashMap<String, Value>>,
+    cleanup_lock: tokio::sync::Mutex<()>,
+    service_log: Option<Mutex<crate::logging::RotatingLog>>,
 }
 
 impl App {
-    pub fn new(config: Config, github: GitHub, store: Store) -> Arc<Self> {
+    pub fn new(
+        config: Config,
+        github: GitHub,
+        store: Store,
+        service_log: Option<crate::logging::RotatingLog>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             config,
             github,
@@ -154,11 +161,20 @@ impl App {
             change_tx: broadcast::channel(64).0,
             caffeinate: Mutex::new(None),
             pending_outcomes: Mutex::new(HashMap::new()),
+            cleanup_lock: tokio::sync::Mutex::new(()),
+            service_log: service_log.map(Mutex::new),
         })
     }
 
     pub fn log(&self, level: &str, source: &str, msg: &str) {
-        println!("[{source}] {msg}");
+        let line = format!("[{level}] [{source}] {msg}");
+        if let Some(log) = &self.service_log {
+            if let Err(error) = log.lock().unwrap().write_line(&line) {
+                eprintln!("could not write service log: {error}");
+            }
+        } else {
+            println!("{line}");
+        }
         self.store.lock().unwrap().event(level, source, msg);
         let _ = self.change_tx.send(json!({
             "ts": now(), "kind": "log", "level": level, "source": source, "msg": msg,
@@ -270,6 +286,7 @@ impl App {
 
 pub async fn start(app: Arc<App>) {
     check_runtimes(&app).await;
+    run_cleanup(&app).await;
     adopt_orphans(&app).await;
     sweep_registrations(&app).await;
     for repo_cfg in app.config.repos.clone() {
@@ -279,6 +296,22 @@ pub async fn start(app: Arc<App>) {
     tokio::spawn(stats_sampler(app.clone()));
     tokio::spawn(burst_poller(app.clone()));
     app.log("info", "scheduler", "started");
+}
+
+async fn run_cleanup(app: &Arc<App>) {
+    let _guard = app.cleanup_lock.lock().await;
+    let report = crate::cleanup::run(&app.config, &app.store, false).await;
+    if report.removed > 0
+        || report.repaired > 0
+        || report.stale_references > 0
+        || report.pruned_jobs > 0
+        || report.pruned_events > 0
+    {
+        app.log("info", "cleanup", &report.summary());
+    }
+    for error in report.errors {
+        app.log("warn", "cleanup", &error);
+    }
 }
 
 /// Slow queued-jobs poll, only for repos that can burst (max > reserved —
@@ -690,7 +723,12 @@ async fn watch_exit(
     let peak_mb = (info.peak_mem_bytes as f64 / (1024.0 * 1024.0)).round();
     if let Some(id) = job_id {
         let store = app.store.lock().unwrap();
-        store.set_job_artifacts(id, log_dir.as_deref(), kept_image.as_deref());
+        store.set_job_artifacts(
+            id,
+            log_dir.as_deref(),
+            kept_image.as_deref(),
+            kept_image.as_ref().map(|_| kind.name()),
+        );
         // The log-line handler can only persist the conclusion if enrichment
         // had already resolved the job id by then; settle it here regardless.
         if let Some(conclusion) = info.job["conclusion"].as_str() {
@@ -708,6 +746,7 @@ async fn watch_exit(
                 "conclusion": info.job["conclusion"],
                 "log_dir": log_dir,
                 "kept_image": kept_image,
+                "kept_image_runtime": kept_image.as_ref().map(|_| kind.name()),
                 "peak_mem_mb": peak_mb,
                 "oom": oom,
             }),
@@ -716,8 +755,12 @@ async fn watch_exit(
     if oom {
         app.log("warn", "reap", &format!("{name} was OOM-killed"));
     }
-    gc_kept_images(&app, kind).await;
-    prune_job_logs(&app);
+    // If enrichment has not assigned a numeric job id yet, the retained tag
+    // is still keyed by runner name and cannot be reconciled safely. The
+    // enrichment task runs cleanup after attaching the parked outcome.
+    if job_id.is_some() {
+        run_cleanup(&app).await;
+    }
 
     {
         let mut runners = app.runners.lock().unwrap();
@@ -908,6 +951,7 @@ async fn enrich_job(app: Arc<App>, name: String) {
                             id,
                             outcome["log_dir"].as_str(),
                             outcome["kept_image"].as_str(),
+                            outcome["kept_image_runtime"].as_str(),
                         );
                         if outcome["peak_mem_mb"].as_f64().unwrap_or(0.0) > 0.0
                             || outcome["oom"].as_bool() == Some(true)
@@ -930,65 +974,12 @@ async fn enrich_job(app: Arc<App>, name: String) {
                         "head_sha": found["head_sha"],
                     }),
                 );
+                if pending.is_some() {
+                    run_cleanup(&app).await;
+                }
                 return;
             }
         }
-    }
-}
-
-/// Keep only the newest `keep_job_logs` captured-log dirs; older ones are
-/// removed and their journal references cleared.
-fn prune_job_logs(app: &Arc<App>) {
-    let jobs_dir = app.config.data_dir.join("jobs");
-    let Ok(entries) = std::fs::read_dir(&jobs_dir) else {
-        return;
-    };
-    let mut dirs: Vec<(std::path::PathBuf, std::time::SystemTime)> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .map(|e| {
-            let modified = e
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::UNIX_EPOCH);
-            (e.path(), modified)
-        })
-        .collect();
-    let budget = app.config.keep_job_logs as usize;
-    if dirs.len() <= budget {
-        return;
-    }
-    dirs.sort_by_key(|(_, modified)| *modified);
-    for (path, _) in dirs.iter().take(dirs.len() - budget) {
-        let _ = std::fs::remove_dir_all(path);
-        app.store
-            .lock()
-            .unwrap()
-            .clear_log_dir(&path.to_string_lossy());
-        app.log(
-            "info",
-            "prune",
-            &format!("removed old job logs {}", path.display()),
-        );
-    }
-}
-
-/// Drop the oldest kept post-mortem images beyond the configured budget.
-async fn gc_kept_images(app: &Arc<App>, kind: crate::config::RuntimeKind) {
-    let excess: Vec<(i64, String)> = {
-        let store = app.store.lock().unwrap();
-        let all = store.kept_images();
-        let budget = app.config.keep_failed_workspaces as usize;
-        if all.len() > budget {
-            all[..all.len() - budget].to_vec()
-        } else {
-            Vec::new()
-        }
-    };
-    for (job_id, tag) in excess {
-        kind.remove_image(&tag).await;
-        app.store.lock().unwrap().clear_kept_image(job_id);
-        app.log("info", "keep", &format!("gc'd kept workspace {tag}"));
     }
 }
 
@@ -1061,7 +1052,7 @@ async fn watchdog(app: Arc<App>) {
         }
         if ts - last_release_check > 86_400.0 {
             last_release_check = ts;
-            app.store.lock().unwrap().prune_events(7.0 * 86_400.0);
+            run_cleanup(&app).await;
             if let Ok(latest) = app.github.latest_runner_release().await {
                 app.log(
                     "info",

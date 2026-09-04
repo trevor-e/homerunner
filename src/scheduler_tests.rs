@@ -22,7 +22,15 @@ fn app(repos: Vec<RepoConfig>, max_total_runners: u32) -> Arc<App> {
         max_total_runners,
         data_dir: PathBuf::from("/tmp/homerunner-tests-unused"),
         keep_failed_workspaces: 0,
+        failed_workspaces_max_age_days: None,
+        failed_workspaces_max_bytes: None,
         keep_job_logs: 10,
+        job_logs_max_age_days: None,
+        job_logs_max_bytes: None,
+        job_history_days: 365,
+        event_history_days: 7,
+        service_log_max_bytes: 10 * 1024 * 1024,
+        service_log_backups: 3,
         poll_interval_s: 30,
         idle_decay_min: 10,
         auth_source: "env:HOMERUNNER_TEST_TOKEN".into(),
@@ -34,6 +42,7 @@ fn app(repos: Vec<RepoConfig>, max_total_runners: u32) -> Arc<App> {
         config,
         GitHub::new("env:HOMERUNNER_TEST_TOKEN"),
         Store::open(Path::new(":memory:")).unwrap(),
+        None,
     )
 }
 

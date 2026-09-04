@@ -5,6 +5,16 @@
 dashboard_port = 4123          # dashboard binds 127.0.0.1 only
 max_total_runners = 4          # global cap across repos (RAM guard)
 data_dir = "~/.local/share/homerunner"
+keep_job_logs = 100            # newest captured job directories
+# job_logs_max_age_days = 30   # optional additional age limit
+# job_logs_max_mb = 1024       # optional aggregate size limit
+keep_failed_workspaces = 2     # newest failed-job Docker snapshots
+# failed_workspaces_max_age_days = 14
+# failed_workspaces_max_mb = 4096
+job_history_days = 365         # only artifact-free completed jobs are pruned
+event_history_days = 7
+service_log_max_mb = 10        # current launchd log file plus bounded backups
+service_log_backups = 3
 
 [auth]
 source = "gh"                  # `gh auth token` | "env:HOMERUNNER_PAT" | "file:~/.homerunner-pat"

@@ -31,6 +31,12 @@ pub struct ManagedContainer {
     pub running: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeptImage {
+    pub tag: String,
+    pub size_bytes: u64,
+}
+
 pub struct SpawnSpec<'a> {
     pub runner_name: &'a str,
     pub repo: &'a str,
@@ -329,8 +335,39 @@ impl RuntimeKind {
         }
     }
 
-    pub async fn remove_image(self, tag: &str) {
-        run_unchecked(&[self.cli(), "rmi", "-f", tag]).await;
+    pub async fn list_kept_images(self) -> Result<Vec<KeptImage>> {
+        if self != RuntimeKind::Docker {
+            return Ok(Vec::new());
+        }
+        let tags = run(&[
+            "docker",
+            "image",
+            "ls",
+            "--filter",
+            "label=homerunner.kept=true",
+            "--format",
+            "{{.Repository}}:{{.Tag}}",
+        ])
+        .await?;
+        let mut images = Vec::new();
+        for tag in tags.lines().filter(|tag| !tag.ends_with(":<none>")) {
+            let inspected = run(&["docker", "image", "inspect", tag]).await?;
+            let rows: Value = serde_json::from_str(&inspected)?;
+            let size_bytes = rows
+                .get(0)
+                .and_then(|row| row["Size"].as_u64())
+                .unwrap_or(0);
+            images.push(KeptImage {
+                tag: tag.to_string(),
+                size_bytes,
+            });
+        }
+        Ok(images)
+    }
+
+    pub async fn remove_image(self, tag: &str) -> Result<()> {
+        run(&[self.cli(), "rmi", "-f", tag]).await?;
+        Ok(())
     }
 
     pub async fn kill(self, container_id: &str) {

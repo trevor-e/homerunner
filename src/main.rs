@@ -1,6 +1,8 @@
 mod agent;
+mod cleanup;
 mod config;
 mod github;
+mod logging;
 mod mcp;
 mod runtime;
 mod scheduler;
@@ -83,6 +85,15 @@ enum Cmd {
     },
     /// (Re)build the runner image from the embedded Dockerfile
     BuildImage,
+    /// Reconcile and prune retained logs, images, events, and job history
+    Gc {
+        /// Show what would change without deleting or updating anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the cleanup report as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn config_path(cli: &Cli) -> PathBuf {
@@ -118,6 +129,31 @@ async fn main() -> Result<()> {
             &cfg.python_version,
             &cfg.node_version,
         ),
+        Cmd::Gc { dry_run, json } => {
+            let store = if dry_run {
+                store::Store::open_readonly(&cfg.db_path())?
+            } else {
+                store::Store::open(&cfg.db_path())?
+            };
+            let store = std::sync::Mutex::new(store);
+            let report = cleanup::run(&cfg, &store, dry_run).await;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                for action in &report.actions {
+                    println!("{action}");
+                }
+                for error in &report.errors {
+                    eprintln!("warning: {error}");
+                }
+                println!("{}", report.summary());
+            }
+            if report.errors.is_empty() {
+                Ok(())
+            } else {
+                anyhow::bail!("cleanup completed with {} error(s)", report.errors.len())
+            }
+        }
         Cmd::Jobs { json, limit } => {
             let store = store::Store::open_readonly(&cfg.db_path())?;
             let jobs = store.recent_jobs(limit);
@@ -339,7 +375,7 @@ async fn run(cfg: config::Config) -> Result<()> {
     let github = github::GitHub::new(&cfg.auth_source);
     let store = store::Store::open(&cfg.db_path())?;
     let port = cfg.dashboard_port;
-    let app = scheduler::App::new(cfg, github, store);
+    let app = scheduler::App::new(cfg, github, store, logging::from_environment());
 
     scheduler::start(app.clone()).await;
 
@@ -348,7 +384,11 @@ async fn run(cfg: config::Config) -> Result<()> {
         .with_context(|| {
             format!("dashboard port {port} unavailable (another supervisor running?)")
         })?;
-    println!("[web] dashboard on http://127.0.0.1:{port}");
+    app.log(
+        "info",
+        "web",
+        &format!("dashboard on http://127.0.0.1:{port}"),
+    );
     axum::serve(listener, web::router(app)).await?;
     Ok(())
 }
@@ -498,6 +538,7 @@ fn install(config_path: &std::path::Path) -> Result<()> {
     let exe = std::env::current_exe()?;
     let log_dir = config::expand_tilde("~/Library/Logs/homerunner");
     std::fs::create_dir_all(&log_dir)?;
+    let cfg = config::load(config_path)?;
     let plist_path = config::expand_tilde(&format!("~/Library/LaunchAgents/{PLIST_LABEL}.plist"));
 
     // launchd's PATH is bare; docker + gh live in /usr/local/bin + /opt/homebrew/bin.
@@ -516,16 +557,23 @@ fn install(config_path: &std::path::Path) -> Result<()> {
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-  <key>StandardOutPath</key><string>{log}</string>
+  <key>StandardOutPath</key><string>/dev/null</string>
   <key>StandardErrorPath</key><string>{log}</string>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOMERUNNER_LOG_FILE</key><string>{log}</string>
+    <key>HOMERUNNER_LOG_MAX_BYTES</key><string>{log_max}</string>
+    <key>HOMERUNNER_LOG_BACKUPS</key><string>{log_backups}</string>
+  </dict>
 </dict>
 </plist>
 "#,
         exe = exe.display(),
         config = config_path.display(),
         log = log_dir.join("homerunner.log").display(),
+        log_max = cfg.service_log_max_bytes,
+        log_backups = cfg.service_log_backups,
     );
     std::fs::write(&plist_path, plist)?;
 

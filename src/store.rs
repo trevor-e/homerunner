@@ -43,6 +43,15 @@ pub struct Store {
     db: Connection,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArtifactRecord {
+    pub job_id: i64,
+    pub completed_at: Option<f64>,
+    pub log_dir: Option<String>,
+    pub kept_image: Option<String>,
+    pub kept_image_runtime: Option<String>,
+}
+
 fn now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -59,6 +68,7 @@ impl Store {
         for stmt in [
             "ALTER TABLE jobs ADD COLUMN log_dir TEXT",
             "ALTER TABLE jobs ADD COLUMN kept_image TEXT",
+            "ALTER TABLE jobs ADD COLUMN kept_image_runtime TEXT",
             "ALTER TABLE jobs ADD COLUMN head_branch TEXT",
             "ALTER TABLE jobs ADD COLUMN head_sha TEXT",
             "ALTER TABLE jobs ADD COLUMN title TEXT",
@@ -68,6 +78,12 @@ impl Store {
         ] {
             let _ = db.execute(stmt, []);
         }
+        // Workspace commits predate runtime tracking and were Docker-only.
+        db.execute(
+            "UPDATE jobs SET kept_image_runtime='docker'
+             WHERE kept_image IS NOT NULL AND kept_image_runtime IS NULL",
+            [],
+        )?;
         Ok(Self { db })
     }
 
@@ -149,11 +165,13 @@ impl Store {
         gh_job_id: i64,
         log_dir: Option<&str>,
         kept_image: Option<&str>,
+        kept_image_runtime: Option<&str>,
     ) {
         let _ = self.db.execute(
-            "UPDATE jobs SET log_dir=COALESCE(?2, log_dir), kept_image=COALESCE(?3, kept_image)
+            "UPDATE jobs SET log_dir=COALESCE(?2, log_dir), kept_image=COALESCE(?3, kept_image),
+             kept_image_runtime=COALESCE(?4, kept_image_runtime)
              WHERE gh_job_id=?1",
-            params![gh_job_id, log_dir, kept_image],
+            params![gh_job_id, log_dir, kept_image, kept_image_runtime],
         );
     }
 
@@ -164,40 +182,105 @@ impl Store {
         );
     }
 
-    pub fn clear_log_dir(&self, log_dir: &str) {
-        let _ = self.db.execute(
+    pub fn clear_log_dir(&self, log_dir: &str) -> Result<usize> {
+        Ok(self.db.execute(
             "UPDATE jobs SET log_dir=NULL WHERE log_dir=?1",
             params![log_dir],
-        );
+        )?)
     }
 
-    pub fn prune_events(&self, older_than_s: f64) {
-        let _ = self.db.execute(
+    pub fn prune_events(&self, older_than_s: f64) -> Result<usize> {
+        Ok(self.db.execute(
             "DELETE FROM events WHERE ts < ?1",
             params![now() - older_than_s],
-        );
+        )?)
     }
 
-    pub fn clear_kept_image(&self, gh_job_id: i64) {
-        let _ = self.db.execute(
-            "UPDATE jobs SET kept_image=NULL WHERE gh_job_id=?1",
+    pub fn count_prunable_events(&self, older_than_s: f64) -> usize {
+        self.db
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE ts < ?1",
+                [now() - older_than_s],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+    }
+
+    pub fn clear_kept_image(&self, gh_job_id: i64) -> Result<usize> {
+        Ok(self.db.execute(
+            "UPDATE jobs SET kept_image=NULL, kept_image_runtime=NULL WHERE gh_job_id=?1",
             params![gh_job_id],
-        );
+        )?)
     }
 
-    /// Kept post-mortem images, oldest first (GC removes from the front).
-    pub fn kept_images(&self) -> Vec<(i64, String)> {
-        let Ok(mut stmt) = self.db.prepare(
-            "SELECT gh_job_id, kept_image FROM jobs WHERE kept_image IS NOT NULL
-             ORDER BY completed_at ASC",
-        ) else {
-            return Vec::new();
+    pub fn artifact_records(&self) -> Vec<ArtifactRecord> {
+        self.artifact_records_query(
+            "SELECT gh_job_id, completed_at, log_dir, kept_image, kept_image_runtime
+             FROM jobs ORDER BY COALESCE(completed_at, started_at) ASC",
+        )
+        .or_else(|| {
+            self.artifact_records_query(
+                "SELECT gh_job_id, completed_at, log_dir, kept_image, NULL
+                 FROM jobs ORDER BY COALESCE(completed_at, started_at) ASC",
+            )
+        })
+        .or_else(|| {
+            self.artifact_records_query(
+                "SELECT gh_job_id, completed_at, NULL, NULL, NULL
+                 FROM jobs ORDER BY COALESCE(completed_at, started_at) ASC",
+            )
+        })
+        .unwrap_or_default()
+    }
+
+    fn artifact_records_query(&self, sql: &str) -> Option<Vec<ArtifactRecord>> {
+        let mut stmt = self.db.prepare(sql).ok()?;
+        let Ok(rows) = stmt.query_map([], |r| {
+            Ok(ArtifactRecord {
+                job_id: r.get(0)?,
+                completed_at: r.get(1)?,
+                log_dir: r.get(2)?,
+                kept_image: r.get(3)?,
+                kept_image_runtime: r.get(4)?,
+            })
+        }) else {
+            return None;
         };
-        let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
-        else {
-            return Vec::new();
-        };
-        rows.filter_map(|r| r.ok()).collect()
+        Some(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn repair_log_dir(&self, gh_job_id: i64, log_dir: &str) -> Result<usize> {
+        Ok(self.db.execute(
+            "UPDATE jobs SET log_dir=?2 WHERE gh_job_id=?1 AND log_dir IS NULL",
+            params![gh_job_id, log_dir],
+        )?)
+    }
+
+    pub fn repair_kept_image(&self, gh_job_id: i64, tag: &str, runtime: &str) -> Result<usize> {
+        Ok(self.db.execute(
+            "UPDATE jobs SET kept_image=?2, kept_image_runtime=?3
+             WHERE gh_job_id=?1 AND kept_image IS NULL",
+            params![gh_job_id, tag, runtime],
+        )?)
+    }
+
+    pub fn count_prunable_jobs(&self, older_than_s: f64) -> usize {
+        self.db
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE completed_at < ?1
+                 AND log_dir IS NULL AND kept_image IS NULL",
+                [now() - older_than_s],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+    }
+
+    pub fn prune_jobs(&self, older_than_s: f64) -> Result<usize> {
+        Ok(self.db.execute(
+            "DELETE FROM jobs WHERE completed_at < ?1
+             AND log_dir IS NULL AND kept_image IS NULL",
+            [now() - older_than_s],
+        )?)
     }
 
     pub fn job(&self, gh_job_id: i64) -> Option<Value> {
@@ -318,7 +401,7 @@ mod tests {
     fn job_lifecycle_round_trips_dashboard_fields() {
         let store = memory_store();
         store.job_started(&job_info(42, "tests"), "owner/repo", "runner-1", Some(10.0));
-        store.set_job_artifacts(42, Some("/logs/42"), Some("kept:42"));
+        store.set_job_artifacts(42, Some("/logs/42"), Some("kept:42"), Some("docker"));
         store.set_job_resources(42, 384.0, true);
         store.job_concluded(42, "failure");
 
@@ -332,6 +415,10 @@ mod tests {
         assert_eq!(job["conclusion"], "failure");
         assert_eq!(job["log_dir"], "/logs/42");
         assert_eq!(job["kept_image"], "kept:42");
+        assert_eq!(
+            store.artifact_records()[0].kept_image_runtime.as_deref(),
+            Some("docker")
+        );
         assert_eq!(job["peak_mem_mb"], 384.0);
         assert_eq!(job["oom"], true);
         assert_eq!(job["head_branch"], "main");
@@ -375,16 +462,19 @@ mod tests {
     fn artifact_references_can_be_cleared_after_gc() {
         let store = memory_store();
         store.job_started(&job_info(7, "failed"), "owner/repo", "runner", Some(1.0));
-        store.set_job_artifacts(7, Some("/logs/7"), Some("kept:7"));
+        store.set_job_artifacts(7, Some("/logs/7"), Some("kept:7"), Some("docker"));
 
-        assert_eq!(store.kept_images(), vec![(7, "kept:7".into())]);
-        store.clear_log_dir("/logs/7");
-        store.clear_kept_image(7);
+        assert_eq!(
+            store.artifact_records()[0].kept_image.as_deref(),
+            Some("kept:7")
+        );
+        store.clear_log_dir("/logs/7").unwrap();
+        store.clear_kept_image(7).unwrap();
 
         let job = store.job(7).unwrap();
         assert!(job["log_dir"].is_null());
         assert!(job["kept_image"].is_null());
-        assert!(store.kept_images().is_empty());
+        assert!(store.artifact_records()[0].kept_image.is_none());
     }
 
     #[test]
@@ -399,11 +489,28 @@ mod tests {
             .unwrap();
         store.event("warn", "new", "current");
 
-        store.prune_events(60.0);
+        store.prune_events(60.0).unwrap();
         let events = store.recent_events(10);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["source"], "new");
         assert_eq!(events[0]["msg"], "current");
+    }
+
+    #[test]
+    fn job_pruning_preserves_rows_with_retained_artifacts() {
+        let store = memory_store();
+        store.job_started(&job_info(1, "plain"), "owner/repo", "runner-1", Some(1.0));
+        store.job_started(&job_info(2, "logs"), "owner/repo", "runner-2", Some(1.0));
+        store.set_job_artifacts(2, Some("/logs/2"), None, None);
+        store
+            .db
+            .execute("UPDATE jobs SET completed_at=1", [])
+            .unwrap();
+
+        assert_eq!(store.count_prunable_jobs(1.0), 1);
+        assert_eq!(store.prune_jobs(1.0).unwrap(), 1);
+        assert!(store.job(1).is_none());
+        assert!(store.job(2).is_some());
     }
 
     #[test]
@@ -412,6 +519,13 @@ mod tests {
         let path = dir.path().join("journal.db");
         let db = Connection::open(&path).unwrap();
         db.execute_batch(SCHEMA).unwrap();
+        db.execute_batch(
+            "ALTER TABLE jobs ADD COLUMN log_dir TEXT;
+             ALTER TABLE jobs ADD COLUMN kept_image TEXT;
+             INSERT INTO jobs (gh_job_id, repo, kept_image)
+             VALUES (99, 'owner/repo', 'homerunner-kept:99');",
+        )
+        .unwrap();
         drop(db);
 
         let store = Store::open(&path).unwrap();
@@ -424,6 +538,7 @@ mod tests {
         for expected in [
             "log_dir",
             "kept_image",
+            "kept_image_runtime",
             "head_branch",
             "head_sha",
             "title",
@@ -433,6 +548,11 @@ mod tests {
         ] {
             assert!(columns.iter().any(|column| column == expected));
         }
+        drop(statement);
+        assert_eq!(
+            store.artifact_records()[0].kept_image_runtime.as_deref(),
+            Some("docker")
+        );
     }
 
     #[test]

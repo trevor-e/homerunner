@@ -45,7 +45,15 @@ struct SupervisorSection {
     max_total_runners: Option<u32>,
     data_dir: Option<String>,
     keep_failed_workspaces: Option<u32>,
+    failed_workspaces_max_age_days: Option<u64>,
+    failed_workspaces_max_mb: Option<u64>,
     keep_job_logs: Option<u32>,
+    job_logs_max_age_days: Option<u64>,
+    job_logs_max_mb: Option<u64>,
+    job_history_days: Option<u64>,
+    event_history_days: Option<u64>,
+    service_log_max_mb: Option<u64>,
+    service_log_backups: Option<u32>,
     poll_interval_s: Option<u64>,
     idle_decay_min: Option<u64>,
 }
@@ -103,8 +111,20 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// How many failed-job workspaces to keep as post-mortem images (0 = off).
     pub keep_failed_workspaces: u32,
+    /// Optional maximum age and aggregate size for post-mortem images.
+    pub failed_workspaces_max_age_days: Option<u64>,
+    pub failed_workspaces_max_bytes: Option<u64>,
     /// How many jobs' captured log dirs to keep (oldest pruned at reap).
     pub keep_job_logs: u32,
+    /// Optional maximum age and aggregate size for captured job directories.
+    pub job_logs_max_age_days: Option<u64>,
+    pub job_logs_max_bytes: Option<u64>,
+    /// Completed job metadata older than this is pruned once artifacts are gone.
+    pub job_history_days: u64,
+    pub event_history_days: u64,
+    /// Rotation policy used by the installed launchd service log.
+    pub service_log_max_bytes: u64,
+    pub service_log_backups: u32,
     /// Queued-jobs poll cadence for repos that can burst (max > reserved).
     pub poll_interval_s: u64,
     /// Minutes an idle burst runner (beyond reserved) lives before decay.
@@ -187,6 +207,9 @@ pub fn load(path: &Path) -> Result<Config> {
             bail!("repo {}: max must be at least 1", rc.repo);
         }
     }
+    if raw.supervisor.service_log_max_mb == Some(0) {
+        bail!("service_log_max_mb must be at least 1");
+    }
 
     let data_dir = expand_tilde(
         raw.supervisor
@@ -200,7 +223,25 @@ pub fn load(path: &Path) -> Result<Config> {
         dashboard_port: raw.supervisor.dashboard_port.unwrap_or(4123),
         max_total_runners: raw.supervisor.max_total_runners.unwrap_or(4),
         keep_failed_workspaces: raw.supervisor.keep_failed_workspaces.unwrap_or(2),
+        failed_workspaces_max_age_days: raw.supervisor.failed_workspaces_max_age_days,
+        failed_workspaces_max_bytes: raw
+            .supervisor
+            .failed_workspaces_max_mb
+            .map(|mb| mb.saturating_mul(1024 * 1024)),
         keep_job_logs: raw.supervisor.keep_job_logs.unwrap_or(100),
+        job_logs_max_age_days: raw.supervisor.job_logs_max_age_days,
+        job_logs_max_bytes: raw
+            .supervisor
+            .job_logs_max_mb
+            .map(|mb| mb.saturating_mul(1024 * 1024)),
+        job_history_days: raw.supervisor.job_history_days.unwrap_or(365),
+        event_history_days: raw.supervisor.event_history_days.unwrap_or(7),
+        service_log_max_bytes: raw
+            .supervisor
+            .service_log_max_mb
+            .unwrap_or(10)
+            .saturating_mul(1024 * 1024),
+        service_log_backups: raw.supervisor.service_log_backups.unwrap_or(3),
         poll_interval_s: raw.supervisor.poll_interval_s.unwrap_or(30),
         idle_decay_min: raw.supervisor.idle_decay_min.unwrap_or(10),
         data_dir,
@@ -239,7 +280,15 @@ dashboard_port = 5000
 max_total_runners = 7
 data_dir = "{}"
 keep_failed_workspaces = 4
+failed_workspaces_max_age_days = 14
+failed_workspaces_max_mb = 2048
 keep_job_logs = 25
+job_logs_max_age_days = 30
+job_logs_max_mb = 512
+job_history_days = 180
+event_history_days = 5
+service_log_max_mb = 8
+service_log_backups = 4
 poll_interval_s = 12
 idle_decay_min = 3
 
@@ -277,7 +326,15 @@ image = "runner:custom"
         assert_eq!(config.dashboard_port, 5000);
         assert_eq!(config.max_total_runners, 7);
         assert_eq!(config.keep_failed_workspaces, 4);
+        assert_eq!(config.failed_workspaces_max_age_days, Some(14));
+        assert_eq!(config.failed_workspaces_max_bytes, Some(2048 * 1024 * 1024));
         assert_eq!(config.keep_job_logs, 25);
+        assert_eq!(config.job_logs_max_age_days, Some(30));
+        assert_eq!(config.job_logs_max_bytes, Some(512 * 1024 * 1024));
+        assert_eq!(config.job_history_days, 180);
+        assert_eq!(config.event_history_days, 5);
+        assert_eq!(config.service_log_max_bytes, 8 * 1024 * 1024);
+        assert_eq!(config.service_log_backups, 4);
         assert_eq!(config.poll_interval_s, 12);
         assert_eq!(config.idle_decay_min, 3);
         assert_eq!(config.auth_source, "env:TEST_TOKEN");
@@ -318,7 +375,15 @@ image = "runner:custom"
         assert_eq!(config.dashboard_port, 4123);
         assert_eq!(config.max_total_runners, 4);
         assert_eq!(config.keep_failed_workspaces, 2);
+        assert_eq!(config.failed_workspaces_max_age_days, None);
+        assert_eq!(config.failed_workspaces_max_bytes, None);
         assert_eq!(config.keep_job_logs, 100);
+        assert_eq!(config.job_logs_max_age_days, None);
+        assert_eq!(config.job_logs_max_bytes, None);
+        assert_eq!(config.job_history_days, 365);
+        assert_eq!(config.event_history_days, 7);
+        assert_eq!(config.service_log_max_bytes, 10 * 1024 * 1024);
+        assert_eq!(config.service_log_backups, 3);
         assert_eq!(config.repos[0].labels, ["self-hosted", "linux", "x64"]);
         assert_eq!(config.repos[0].reserved, 1);
         assert_eq!(config.repos[0].max, 2);

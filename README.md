@@ -99,6 +99,7 @@ Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 | `why [job] [--json]` | failure digest: what ran, log excerpt around the error |
 | `logs [job]` | full captured step logs (`latest`, `latest-failed`, or an id) |
 | `exec [job] [-- cmd]` | shell inside a kept failed-job workspace; `-- cmd` runs one command, no TTY (for agents/scripts) |
+| `gc [--dry-run] [--json]` | reconcile retained artifacts and enforce cleanup policy |
 | `events [--json]` | follow the live event stream (`job_started`, `job_result`, `burst`, …; NDJSON with `--json`) |
 | `mcp` | MCP server over stdio: `claude mcp add homerunner -- homerunner mcp` |
 | `doctor` | check token, runtime, image, repo access |
@@ -110,6 +111,15 @@ marks kept workspaces. A dedicated `/logs` workspace collects captured job
 logs and live runner streams. Its viewer supports plain-text and regex search,
 match navigation, severity filters, line wrapping, JSON detection and
 pretty-printing, copy/download actions, and live streaming from active runners.
+
+Cleanup runs at supervisor startup, after completed jobs, and daily. Count
+limits can be combined with optional age and aggregate-size limits for job
+logs and retained workspaces. Deletions clear journal references only after
+the filesystem or container runtime confirms success; `homerunner gc
+--dry-run` previews reconciliation and pruning. Completed job metadata is
+kept for `job_history_days` (default 365) after its artifacts are gone, and
+events are kept for `event_history_days` (default 7). Installed-service logs
+rotate at `service_log_max_mb` with `service_log_backups` retained files.
 
 ## Notes
 

@@ -81,6 +81,32 @@ async fn disk(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     let db_path = app.config.db_path();
     let keep_logs = app.config.keep_job_logs;
     let keep_ws = app.config.keep_failed_workspaces;
+    let log_retention = [
+        Some(format!("newest {keep_logs} jobs")),
+        app.config
+            .job_logs_max_age_days
+            .map(|days| format!("max {days} days")),
+        app.config
+            .job_logs_max_bytes
+            .map(|bytes| format!("max {} MB", bytes / (1024 * 1024))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("; ");
+    let image_retention = [
+        Some(format!("newest {keep_ws} failed jobs")),
+        app.config
+            .failed_workspaces_max_age_days
+            .map(|days| format!("max {days} days")),
+        app.config
+            .failed_workspaces_max_bytes
+            .map(|bytes| format!("max {} MB", bytes / (1024 * 1024))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("; ");
 
     let (jobs_count, jobs_bytes) = tokio::task::spawn_blocking(move || dir_stats(&jobs_dir))
         .await
@@ -132,15 +158,18 @@ async fn disk(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
         "job_logs": {
             "path": app.config.data_dir.join("jobs").to_string_lossy(),
             "jobs": jobs_count, "bytes": jobs_bytes,
-            "retention": format!("newest {keep_logs} jobs kept"),
+            "retention": log_retention,
         },
         "journal": {
             "path": db_path.to_string_lossy(), "bytes": db_bytes,
-            "retention": "events pruned after 7 days",
+            "retention": format!(
+                "events: {} days; artifact-free jobs: {} days",
+                app.config.event_history_days, app.config.job_history_days
+            ),
         },
         "images": {
             "list": images,
-            "retention": format!("kept workspaces: newest {keep_ws} failed jobs"),
+            "retention": image_retention,
         },
         "volumes": {
             "list": volumes,
@@ -297,7 +326,15 @@ mod tests {
                 max_total_runners: 2,
                 data_dir: data_dir.into(),
                 keep_failed_workspaces: 1,
+                failed_workspaces_max_age_days: None,
+                failed_workspaces_max_bytes: None,
                 keep_job_logs: 10,
+                job_logs_max_age_days: None,
+                job_logs_max_bytes: None,
+                job_history_days: 365,
+                event_history_days: 7,
+                service_log_max_bytes: 10 * 1024 * 1024,
+                service_log_backups: 3,
                 poll_interval_s: 30,
                 idle_decay_min: 10,
                 auth_source: "env:HOMERUNNER_TEST_TOKEN".into(),
@@ -307,6 +344,7 @@ mod tests {
             },
             GitHub::new("env:HOMERUNNER_TEST_TOKEN"),
             Store::open(Path::new(":memory:")).unwrap(),
+            None,
         )
     }
 
@@ -434,7 +472,7 @@ mod tests {
                 "runner-1",
                 Some(10.0),
             );
-            store.set_job_artifacts(42, Some(capture.to_string_lossy().as_ref()), None);
+            store.set_job_artifacts(42, Some(capture.to_string_lossy().as_ref()), None, None);
         }
 
         let response = router(app)

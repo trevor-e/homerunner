@@ -23,7 +23,8 @@
   .side-nav a { height:36px; margin:2px 0; padding:0 10px; display:flex; align-items:center; gap:9px; border-radius:7px; color:var(--muted); }
   .side-nav a:hover { color:var(--text); background:var(--panel-2); }
   .side-nav a.active { color:var(--text); background:linear-gradient(90deg,rgba(93,228,199,.11),rgba(93,228,199,.02)); box-shadow:inset 2px 0 var(--cyan); }
-  .icon { width:15px; color:var(--cyan); font:12px "SFMono-Regular",monospace; }
+  .side-nav .icon { width:16px; height:16px; flex:none; display:grid; place-items:center; color:var(--cyan); }
+  .side-nav .icon svg { width:15px; height:15px; display:block; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
   .badge { min-width:19px; height:18px; padding:0 5px; margin-left:auto; display:grid; place-items:center; border-radius:9px; color:#ff9aae; background:rgba(247,118,142,.12); font:9px "SFMono-Regular",monospace; }
   .side-status { position:absolute; left:13px; right:13px; bottom:17px; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
   .connection { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11px; }
@@ -89,7 +90,7 @@
 <div class="app">
   <aside>
     <div class="brand"><span class="brandmark"></span>homerunner <small>v0.3</small></div>
-    <nav class="side-nav"><a href="/"><span class="icon">⌂</span>Overview</a><a class="active" href="/logs"><span class="icon">⌁</span>Logs <span class="badge" id="failed-badge" hidden></span></a><a href="/analytics"><span class="icon">⌇</span>Analytics</a><a href="/search"><span class="icon">⌕</span>Search</a></nav>
+    <nav class="side-nav"><a href="/"><span class="icon"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1"/><rect x="9" y="9" width="4.5" height="4.5" rx="1"/></svg></span>Overview</a><a class="active" href="/logs"><span class="icon"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="1.75" width="11" height="12.5" rx="1.5"/><path d="M5 5h6M5 8h6M5 11h4"/></svg></span>Logs <span class="badge" id="failed-badge" hidden></span></a><a href="/analytics"><span class="icon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 13.5h11M4 11V8M8 11V3.5M12 11V6"/></svg></span>Analytics</a><a href="/search"><span class="icon"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25"/><path d="m10.25 10.25 3.25 3.25"/></svg></span>Search</a></nav>
     <div class="side-status"><div class="connection" id="connection"><i></i><span>Connecting</span></div></div>
   </aside>
   <div class="content">

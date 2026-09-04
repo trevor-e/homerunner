@@ -428,6 +428,13 @@ mod tests {
         assert!(SEARCH_HTML.contains("Global Log Search"));
         assert!(SEARCH_HTML.contains("step:"));
         assert!(SEARCH_HTML.contains("href=\"/analytics\""));
+        for page in [INDEX_HTML, LOGS_INDEX_HTML, ANALYTICS_HTML, SEARCH_HTML] {
+            assert!(page.matches("<span class=\"icon\"><svg").count() >= 4);
+            assert!(!page.contains("<span class=\"icon\">⌂"));
+            assert!(!page.contains("<span class=\"icon\">⌁"));
+            assert!(!page.contains("<span class=\"icon\">⌇"));
+            assert!(!page.contains("<span class=\"icon\">⌕"));
+        }
     }
 
     #[tokio::test]

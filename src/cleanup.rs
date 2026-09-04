@@ -1,7 +1,7 @@
 //! Reconcile retained artifacts with the journal and enforce storage policy.
 
 use crate::config::{Config, RuntimeKind};
-use crate::store::{ArtifactRecord, Store};
+use crate::store::{ArtifactRecord, DockerCacheRecord, Store};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -311,6 +311,26 @@ fn image_job_id(tag: &str) -> Option<i64> {
     tag.strip_prefix("homerunner-kept:")?.parse().ok()
 }
 
+fn cache_removal_reason(
+    in_use: bool,
+    configured_slots: Option<u32>,
+    slot: u32,
+    last_used: f64,
+    max_age_days: u64,
+    ts: f64,
+) -> Option<&'static str> {
+    if in_use {
+        return None;
+    }
+    if configured_slots.is_none_or(|max| slot >= max) {
+        return Some("no configured cache slot");
+    }
+    if max_age_days > 0 && last_used < ts - max_age_days as f64 * DAY {
+        return Some("expired");
+    }
+    None
+}
+
 #[derive(Debug)]
 struct ImageArtifact {
     candidate: Candidate,
@@ -505,6 +525,107 @@ async fn cleanup_images(
     }
 }
 
+async fn cleanup_docker_caches(
+    config: &Config,
+    store: &Mutex<Store>,
+    dry_run: bool,
+    report: &mut CleanupReport,
+) {
+    let records = store.lock().unwrap().docker_cache_records();
+    if !config.repos.iter().any(|repo| repo.docker_layer_cache) && records.is_empty() {
+        return;
+    }
+    let volumes = match RuntimeKind::Docker.list_docker_cache_volumes().await {
+        Ok(volumes) => volumes,
+        Err(error) => {
+            report
+                .errors
+                .push(format!("inventory Docker layer caches: {error}"));
+            return;
+        }
+    };
+    let actual: HashSet<&str> = volumes.iter().map(|volume| volume.name.as_str()).collect();
+    for record in &records {
+        if !actual.contains(record.name.as_str()) {
+            report.stale_references += 1;
+            report
+                .actions
+                .push(format!("forget missing Docker cache {}", record.name));
+            if !dry_run {
+                if let Err(error) = store.lock().unwrap().forget_docker_cache(&record.name) {
+                    report
+                        .errors
+                        .push(format!("forget Docker cache {}: {error}", record.name));
+                }
+            }
+        }
+    }
+
+    let tracked: HashMap<&str, &DockerCacheRecord> = records
+        .iter()
+        .map(|record| (record.name.as_str(), record))
+        .collect();
+    let configured: HashMap<&str, u32> = config
+        .repos
+        .iter()
+        .filter(|repo| repo.docker_layer_cache)
+        .map(|repo| (repo.repo.as_str(), repo.max))
+        .collect();
+    for volume in volumes {
+        let Some(record) = tracked.get(volume.name.as_str()).copied() else {
+            report.repaired += 1;
+            report.actions.push(format!(
+                "track existing Docker cache {} for {} slot {}",
+                volume.name, volume.repo, volume.slot
+            ));
+            if !dry_run {
+                store
+                    .lock()
+                    .unwrap()
+                    .touch_docker_cache(&volume.name, &volume.repo, volume.slot);
+            }
+            continue;
+        };
+        let reason = cache_removal_reason(
+            volume.in_use,
+            configured.get(volume.repo.as_str()).copied(),
+            volume.slot,
+            record.last_used,
+            config.docker_cache_max_age_days,
+            now(),
+        );
+        let Some(reason) = reason else {
+            continue;
+        };
+        report.planned += 1;
+        report.actions.push(format!(
+            "{} Docker cache {} ({reason})",
+            if dry_run { "remove" } else { "removed" },
+            volume.name
+        ));
+        if dry_run {
+            continue;
+        }
+        match RuntimeKind::Docker
+            .remove_docker_cache_volume(&volume.name)
+            .await
+        {
+            Ok(()) => {
+                report.removed += 1;
+                if let Err(error) = store.lock().unwrap().forget_docker_cache(&volume.name) {
+                    report.errors.push(format!(
+                        "removed Docker cache {} but could not forget it: {error}",
+                        volume.name
+                    ));
+                }
+            }
+            Err(error) => report
+                .errors
+                .push(format!("remove Docker cache {}: {error}", volume.name)),
+        }
+    }
+}
+
 pub async fn run(config: &Config, store: &Mutex<Store>, dry_run: bool) -> CleanupReport {
     let mut report = CleanupReport {
         dry_run,
@@ -513,6 +634,7 @@ pub async fn run(config: &Config, store: &Mutex<Store>, dry_run: bool) -> Cleanu
     let records = store.lock().unwrap().artifact_records();
     cleanup_logs(config, store, &records, dry_run, &mut report);
     cleanup_images(config, store, &records, dry_run, &mut report).await;
+    cleanup_docker_caches(config, store, dry_run, &mut report).await;
 
     let job_age = config.job_history_days as f64 * DAY;
     let event_age = config.event_history_days as f64 * DAY;
@@ -549,6 +671,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cache_cleanup_respects_use_config_and_age() {
+        let ts = 100.0 * DAY;
+        assert_eq!(
+            cache_removal_reason(false, Some(2), 2, ts, 30, ts),
+            Some("no configured cache slot")
+        );
+        assert_eq!(
+            cache_removal_reason(false, Some(2), 1, 60.0 * DAY, 30, ts),
+            Some("expired")
+        );
+        assert_eq!(
+            cache_removal_reason(false, Some(2), 1, 60.0 * DAY, 0, ts),
+            None
+        );
+        assert_eq!(cache_removal_reason(true, None, 99, 0.0, 1, ts), None);
+    }
+
     fn config(data_dir: &Path, keep_job_logs: u32) -> Config {
         Config {
             dashboard_port: 0,
@@ -566,6 +706,7 @@ mod tests {
             service_log_backups: 1,
             poll_interval_s: 30,
             idle_decay_min: 10,
+            docker_cache_max_age_days: 30,
             auth_source: "env:TEST_TOKEN".into(),
             python_version: "3.13".into(),
             node_version: "24".into(),
@@ -580,6 +721,7 @@ mod tests {
                 job_timeout_min: 60,
                 caffeinate: false,
                 registry_mirror: None,
+                docker_layer_cache: false,
             }],
         }
     }

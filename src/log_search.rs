@@ -463,7 +463,7 @@ mod tests {
         });
         store.job_started(&info, "owner/repo", "runner", Some(1.0));
         store.job_concluded(42, "failure");
-        store.set_job_artifacts(42, Some(capture.to_str().unwrap()), None);
+        store.set_job_artifacts(42, Some(capture.to_str().unwrap()), None, None);
 
         let report = search(
             &store,

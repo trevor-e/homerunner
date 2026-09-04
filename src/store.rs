@@ -37,6 +37,12 @@ CREATE TABLE IF NOT EXISTS events (
   source TEXT NOT NULL,
   msg TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS docker_caches (
+  name TEXT PRIMARY KEY,
+  repo TEXT NOT NULL,
+  slot INTEGER NOT NULL,
+  last_used REAL NOT NULL
+);
 ";
 
 pub struct Store {
@@ -58,6 +64,14 @@ pub struct JobFilter<'a> {
     pub workflow: Option<&'a str>,
     pub job_name: Option<&'a str>,
     pub completed_after: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockerCacheRecord {
+    pub name: String,
+    pub repo: String,
+    pub slot: u32,
+    pub last_used: f64,
 }
 
 fn now() -> f64 {
@@ -245,6 +259,41 @@ impl Store {
             }
         }
         count
+    }
+
+    pub fn touch_docker_cache(&self, name: &str, repo: &str, slot: u32) {
+        let _ = self.db.execute(
+            "INSERT INTO docker_caches (name, repo, slot, last_used)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(name) DO UPDATE SET repo=?2, slot=?3, last_used=?4",
+            params![name, repo, slot, now()],
+        );
+    }
+
+    pub fn docker_cache_records(&self) -> Vec<DockerCacheRecord> {
+        let Ok(mut stmt) = self
+            .db
+            .prepare("SELECT name, repo, slot, last_used FROM docker_caches")
+        else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([], |row| {
+            Ok(DockerCacheRecord {
+                name: row.get(0)?,
+                repo: row.get(1)?,
+                slot: row.get(2)?,
+                last_used: row.get(3)?,
+            })
+        }) else {
+            return Vec::new();
+        };
+        rows.filter_map(Result::ok).collect()
+    }
+
+    pub fn forget_docker_cache(&self, name: &str) -> Result<usize> {
+        Ok(self
+            .db
+            .execute("DELETE FROM docker_caches WHERE name=?1", [name])?)
     }
 
     pub fn clear_log_dir(&self, log_dir: &str) -> Result<usize> {
@@ -605,6 +654,25 @@ mod tests {
         let jobs = store.jobs_with_logs(10);
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0]["gh_job_id"], 1);
+    }
+
+    #[test]
+    fn docker_cache_records_are_touched_and_forgotten() {
+        let store = memory_store();
+        store.touch_docker_cache("cache-0", "owner/repo", 0);
+        let first = store.docker_cache_records().pop().unwrap();
+        assert_eq!(first.name, "cache-0");
+        assert_eq!(first.repo, "owner/repo");
+        assert_eq!(first.slot, 0);
+
+        store.touch_docker_cache("cache-0", "owner/renamed", 2);
+        let updated = store.docker_cache_records().pop().unwrap();
+        assert_eq!(updated.repo, "owner/renamed");
+        assert_eq!(updated.slot, 2);
+        assert!(updated.last_used >= first.last_used);
+
+        assert_eq!(store.forget_docker_cache("cache-0").unwrap(), 1);
+        assert!(store.docker_cache_records().is_empty());
     }
 
     #[test]

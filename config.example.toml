@@ -15,6 +15,7 @@ job_history_days = 365         # only artifact-free completed jobs are pruned
 event_history_days = 7
 service_log_max_mb = 10        # current launchd log file plus bounded backups
 service_log_backups = 3
+docker_cache_max_age_days = 30 # prune unused per-slot Docker caches; 0 disables age pruning
 
 [auth]
 source = "gh"                  # `gh auth token` | "env:HOMERUNNER_PAT" | "file:~/.homerunner-pat"
@@ -32,6 +33,7 @@ max = 2                        # burst ceiling; queued jobs scale the pool up to
 job_timeout_min = 120          # kill + respawn a wedged busy runner
 caffeinate = true              # keep the Mac awake while a job is running
 # registry_mirror = "http://host.docker.internal:5001"
+docker_layer_cache = false     # opt in: persistent /var/lib/docker, isolated per repo + slot
 
 [[repos]]
 repo = "trevor-e/adulting"

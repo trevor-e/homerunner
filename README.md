@@ -138,6 +138,17 @@ Rules can be scoped by repository, workflow, job name, and branch. Set
 `retain_workspace = true` to preserve a matched Docker workspace within the
 same bounded `keep_failed_workspaces` budget; see `config.example.toml`.
 
+Set `docker_layer_cache = true` for a Docker-backed repo to persist inner
+Docker layers between ephemeral jobs. Homerunner assigns one named volume per
+repo concurrency slot, so live daemons never share `/var/lib/docker` and
+different repositories never share cache data. Containers, networks, and
+inner Docker volumes are cleared before the next job; only images and build
+layers carry over. `homerunner gc` removes cache
+slots that no longer exist in config and caches unused for
+`docker_cache_max_age_days` (default 30; `0` disables age pruning). Because
+Docker layers can contain files copied during builds, only enable this for
+repositories that are allowed to reuse one another's build layers.
+
 ## Notes
 
 - Per repo, `reserved` warm runners stay listening (0 = fully on-demand) and

@@ -14,6 +14,8 @@ use tokio::sync::mpsc;
 pub const MANAGED_LABEL: &str = "homerunner.managed";
 pub const REPO_LABEL: &str = "homerunner.repo";
 pub const RUNNER_LABEL: &str = "homerunner.runner";
+pub const CACHE_LABEL: &str = "homerunner.cache";
+pub const CACHE_SLOT_LABEL: &str = "homerunner.cache-slot";
 
 pub const CACHE_VOLUMES: &[(&str, &str)] = &[
     ("homerunner-home-cache", "/home/runner/.cache"),
@@ -29,6 +31,7 @@ pub struct ManagedContainer {
     pub runner_name: String,
     pub repo: String,
     pub running: bool,
+    pub docker_cache_slot: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,12 +40,22 @@ pub struct KeptImage {
     pub size_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DockerCacheVolume {
+    pub name: String,
+    pub repo: String,
+    pub slot: u32,
+    pub in_use: bool,
+}
+
 pub struct SpawnSpec<'a> {
     pub runner_name: &'a str,
     pub repo: &'a str,
     pub image: &'a str,
     pub jit_config: &'a str,
     pub registry_mirror: Option<&'a str>,
+    pub docker_cache_volume: Option<&'a str>,
+    pub docker_cache_slot: Option<u32>,
 }
 
 async fn run(argv: &[&str]) -> Result<String> {
@@ -158,12 +171,21 @@ impl RuntimeKind {
         for label in [&managed, &repo, &runner] {
             argv.extend(["--label".into(), label.clone()]);
         }
+        if let Some(slot) = spec.docker_cache_slot {
+            argv.extend(["--label".into(), format!("{CACHE_SLOT_LABEL}={slot}")]);
+        }
         argv.extend(["-e".into(), jit]);
         if let Some(mirror) = spec.registry_mirror {
             argv.extend(["-e".into(), format!("REGISTRY_MIRROR={mirror}")]);
         }
         for (volume, mount) in CACHE_VOLUMES {
             argv.extend(["-v".into(), format!("{volume}:{mount}")]);
+        }
+        if let Some(volume) = spec.docker_cache_volume {
+            argv.extend([
+                "--mount".into(),
+                format!("type=volume,source={volume},target=/var/lib/docker"),
+            ]);
         }
         argv.push(spec.image.into());
 
@@ -228,6 +250,9 @@ impl RuntimeKind {
                         runner_name: labels[RUNNER_LABEL].as_str().unwrap_or_default().into(),
                         repo: labels[REPO_LABEL].as_str().unwrap_or_default().into(),
                         running: inspect["State"]["Running"].as_bool().unwrap_or(false),
+                        docker_cache_slot: labels[CACHE_SLOT_LABEL]
+                            .as_str()
+                            .and_then(|value| value.parse().ok()),
                     });
                 }
                 Ok(containers)
@@ -249,6 +274,7 @@ impl RuntimeKind {
                             .unwrap_or_default()
                             .into(),
                         running: row["status"].as_str() == Some("running"),
+                        docker_cache_slot: None,
                     })
                     .collect())
             }
@@ -367,6 +393,94 @@ impl RuntimeKind {
 
     pub async fn remove_image(self, tag: &str) -> Result<()> {
         run(&[self.cli(), "rmi", "-f", tag]).await?;
+        Ok(())
+    }
+
+    pub async fn ensure_docker_cache_volume(self, name: &str, repo: &str, slot: u32) -> Result<()> {
+        anyhow::ensure!(
+            self == RuntimeKind::Docker,
+            "Docker cache requires Docker runtime"
+        );
+        if let Ok(output) = run(&["docker", "volume", "inspect", name]).await {
+            let rows: Value = serde_json::from_str(&output)?;
+            let volume = rows.get(0).context("Docker returned no volume details")?;
+            anyhow::ensure!(
+                volume["Labels"][CACHE_LABEL].as_str() == Some("true")
+                    && volume["Labels"][REPO_LABEL].as_str() == Some(repo)
+                    && volume["Labels"][CACHE_SLOT_LABEL]
+                        .as_str()
+                        .is_some_and(|value| value == slot.to_string()),
+                "refusing to reuse volume {name}: ownership labels do not match {repo} slot {slot}"
+            );
+            return Ok(());
+        }
+        let cache = format!("{CACHE_LABEL}=true");
+        let repo_label = format!("{REPO_LABEL}={repo}");
+        let slot_label = format!("{CACHE_SLOT_LABEL}={slot}");
+        run(&[
+            "docker",
+            "volume",
+            "create",
+            "--label",
+            &cache,
+            "--label",
+            &repo_label,
+            "--label",
+            &slot_label,
+            name,
+        ])
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_docker_cache_volumes(self) -> Result<Vec<DockerCacheVolume>> {
+        if self != RuntimeKind::Docker {
+            return Ok(Vec::new());
+        }
+        let names = run(&[
+            "docker",
+            "volume",
+            "ls",
+            "--filter",
+            &format!("label={CACHE_LABEL}=true"),
+            "--format",
+            "{{.Name}}",
+        ])
+        .await?;
+        let mut volumes = Vec::new();
+        for name in names.lines().filter(|name| !name.is_empty()) {
+            let inspected = run(&["docker", "volume", "inspect", name]).await?;
+            let rows: Value = serde_json::from_str(&inspected)?;
+            let Some(volume) = rows.get(0) else {
+                continue;
+            };
+            let Some(repo) = volume["Labels"][REPO_LABEL].as_str() else {
+                continue;
+            };
+            let Some(slot) = volume["Labels"][CACHE_SLOT_LABEL]
+                .as_str()
+                .and_then(|value| value.parse().ok())
+            else {
+                continue;
+            };
+            let attached =
+                run(&["docker", "ps", "-aq", "--filter", &format!("volume={name}")]).await?;
+            volumes.push(DockerCacheVolume {
+                name: name.into(),
+                repo: repo.into(),
+                slot,
+                in_use: !attached.trim().is_empty(),
+            });
+        }
+        Ok(volumes)
+    }
+
+    pub async fn remove_docker_cache_volume(self, name: &str) -> Result<()> {
+        anyhow::ensure!(
+            self == RuntimeKind::Docker,
+            "Docker cache requires Docker runtime"
+        );
+        run(&["docker", "volume", "rm", name]).await?;
         Ok(())
     }
 

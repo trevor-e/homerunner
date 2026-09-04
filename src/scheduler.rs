@@ -30,6 +30,18 @@ fn now() -> f64 {
         .as_secs_f64()
 }
 
+fn cache_volume_name(repo: &str, slot: u32) -> String {
+    // Include a stable hash so repositories whose slugs happen to collide
+    // never share Docker state.
+    let hash = repo.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    format!(
+        "homerunner-docker-{}-{hash:016x}-{slot}",
+        repo.replace('/', "-")
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunnerState {
     Starting,
@@ -87,6 +99,8 @@ pub struct RunnerInfo {
     pub monitor_alerts: HashSet<String>,
     /// A matched monitor can preserve the workspace even for a successful job.
     pub retain_workspace: bool,
+    /// Stable per-repository cache lane. No two live runners share a lane.
+    pub docker_cache_slot: Option<u32>,
 }
 
 impl RunnerInfo {
@@ -112,6 +126,7 @@ impl RunnerInfo {
             peak_cpu_pct: 0.0,
             monitor_alerts: HashSet::new(),
             retain_workspace: false,
+            docker_cache_slot: None,
         }
     }
 
@@ -210,7 +225,7 @@ impl App {
             .count() as u32
     }
 
-    fn reserve_runner(&self, name: String, info: RunnerInfo) -> bool {
+    fn reserve_runner(&self, name: String, mut info: RunnerInfo) -> bool {
         let mut runners = self.runners.lock().unwrap();
         let repo_slots = runners
             .values()
@@ -219,6 +234,19 @@ impl App {
         let total_slots = runners.values().filter(|r| r.state.occupies_slot()).count() as u32;
         if repo_slots >= info.repo_cfg.max || total_slots >= self.config.max_total_runners {
             return false;
+        }
+        if info.repo_cfg.docker_layer_cache {
+            let used: HashSet<u32> = runners
+                .values()
+                .filter(|runner| {
+                    runner.state.occupies_slot() && runner.repo_cfg.repo == info.repo_cfg.repo
+                })
+                .filter_map(|runner| runner.docker_cache_slot)
+                .collect();
+            let Some(slot) = (0..info.repo_cfg.max).find(|slot| !used.contains(slot)) else {
+                return false;
+            };
+            info.docker_cache_slot = Some(slot);
         }
         runners.insert(name, info);
         true
@@ -274,6 +302,7 @@ impl App {
                 "runtime": rc.runtime.name(),
                 "reserved": rc.reserved,
                 "max": rc.max,
+                "docker_layer_cache": rc.docker_layer_cache,
                 "live": runners.values()
                     .filter(|r| r.state.live() && r.repo_cfg.repo == rc.repo).count(),
             })).collect::<Vec<_>>(),
@@ -291,6 +320,7 @@ impl App {
                     "log_tail": r.log_tail.iter().rev().take(8).rev().map(|(_, line)| line).collect::<Vec<_>>(),
                     "cpu_pct": r.cpu_pct,
                     "mem_bytes": r.mem_bytes,
+                    "docker_cache_slot": r.docker_cache_slot,
                 })).collect::<Vec<_>>(),
         })
     }
@@ -486,10 +516,20 @@ async fn adopt_orphans(app: &Arc<App>) {
                 .cloned();
             match (mc.running, repo_cfg) {
                 (true, Some(repo_cfg)) => {
-                    app.runners.lock().unwrap().insert(
-                        mc.runner_name.clone(),
-                        RunnerInfo::new(repo_cfg, RunnerState::Listening, mc.container_id.clone()),
-                    );
+                    let mut info =
+                        RunnerInfo::new(repo_cfg, RunnerState::Listening, mc.container_id.clone());
+                    info.docker_cache_slot = mc.docker_cache_slot;
+                    if let Some(slot) = info.docker_cache_slot {
+                        app.store.lock().unwrap().touch_docker_cache(
+                            &cache_volume_name(&info.repo_cfg.repo, slot),
+                            &info.repo_cfg.repo,
+                            slot,
+                        );
+                    }
+                    app.runners
+                        .lock()
+                        .unwrap()
+                        .insert(mc.runner_name.clone(), info);
                     start_watchers(app, &mc.runner_name, kind, &mc.container_id);
                     app.log(
                         "info",
@@ -573,8 +613,25 @@ async fn spawn_runner(app: &Arc<App>, repo_cfg: &RepoConfig) -> bool {
     if !app.reserve_runner(name.clone(), info.clone()) {
         return false;
     }
+    let docker_cache_slot = app
+        .runners
+        .lock()
+        .unwrap()
+        .get(&name)
+        .and_then(|runner| runner.docker_cache_slot);
+    let docker_cache_volume = docker_cache_slot.map(|slot| cache_volume_name(&repo_cfg.repo, slot));
 
     let spawned = async {
+        if let (Some(slot), Some(volume)) = (docker_cache_slot, docker_cache_volume.as_deref()) {
+            repo_cfg
+                .runtime
+                .ensure_docker_cache_volume(volume, &repo_cfg.repo, slot)
+                .await?;
+            app.store
+                .lock()
+                .unwrap()
+                .touch_docker_cache(volume, &repo_cfg.repo, slot);
+        }
         let (gh_id, jit) = app
             .github
             .generate_jitconfig(&repo_cfg.repo, &name, &repo_cfg.labels)
@@ -587,6 +644,8 @@ async fn spawn_runner(app: &Arc<App>, repo_cfg: &RepoConfig) -> bool {
                 image: &repo_cfg.image,
                 jit_config: &jit,
                 registry_mirror: repo_cfg.registry_mirror.as_deref(),
+                docker_cache_volume: docker_cache_volume.as_deref(),
+                docker_cache_slot,
             })
             .await?;
         anyhow::Ok((gh_id, container_id))
@@ -791,6 +850,13 @@ async fn watch_exit(
                 ),
             }
         }
+    }
+    if let Some(slot) = info.docker_cache_slot {
+        app.store.lock().unwrap().touch_docker_cache(
+            &cache_volume_name(&repo_cfg.repo, slot),
+            &repo_cfg.repo,
+            slot,
+        );
     }
     kind.remove(&container_id).await;
     let peak_mb = (info.peak_mem_bytes as f64 / (1024.0 * 1024.0)).round();

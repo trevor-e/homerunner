@@ -149,7 +149,8 @@ async fn disk(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     for line in docker_lines(&["system", "df", "-v"]).await {
         let is_cache_volume = crate::runtime::CACHE_VOLUMES
             .iter()
-            .any(|(name, _)| line.starts_with(name));
+            .any(|(name, _)| line.starts_with(name))
+            || line.starts_with("homerunner-docker-");
         if is_cache_volume {
             let fields: Vec<&str> = line.split_whitespace().collect();
             if fields.len() >= 2 {
@@ -180,7 +181,10 @@ async fn disk(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
         },
         "volumes": {
             "list": volumes,
-            "retention": "dependency caches; grow with churn, `docker volume rm` resets",
+            "retention": format!(
+                "dependency caches; Docker layers unused for {} days are pruned by `homerunner gc`",
+                app.config.docker_cache_max_age_days
+            ),
         },
     }))
 }
@@ -359,6 +363,7 @@ mod tests {
             job_timeout_min: 60,
             caffeinate: false,
             registry_mirror: None,
+            docker_layer_cache: false,
         }
     }
 
@@ -380,6 +385,7 @@ mod tests {
                 service_log_backups: 3,
                 poll_interval_s: 30,
                 idle_decay_min: 10,
+                docker_cache_max_age_days: 30,
                 auth_source: "env:HOMERUNNER_TEST_TOKEN".into(),
                 python_version: "3.13".into(),
                 node_version: "24".into(),
@@ -513,6 +519,7 @@ mod tests {
                 peak_cpu_pct: 0.0,
                 monitor_alerts: std::collections::HashSet::new(),
                 retain_workspace: false,
+                docker_cache_slot: None,
             },
         );
         let response = router(app)
@@ -610,7 +617,7 @@ mod tests {
             });
             store.job_started(&info, "owner/project", "runner", Some(1.0));
             store.job_concluded(77, "failure");
-            store.set_job_artifacts(77, capture.to_str(), None);
+            store.set_job_artifacts(77, capture.to_str(), None, None);
         }
 
         let response = router(app)

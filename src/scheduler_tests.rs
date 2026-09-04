@@ -13,6 +13,7 @@ fn repo(name: &str, reserved: u32, max: u32) -> RepoConfig {
         job_timeout_min: 60,
         caffeinate: false,
         registry_mirror: None,
+        docker_layer_cache: false,
     }
 }
 
@@ -33,6 +34,7 @@ fn app(repos: Vec<RepoConfig>, max_total_runners: u32) -> Arc<App> {
         service_log_backups: 3,
         poll_interval_s: 30,
         idle_decay_min: 10,
+        docker_cache_max_age_days: 30,
         auth_source: "env:HOMERUNNER_TEST_TOKEN".into(),
         python_version: "3.13".into(),
         node_version: "24".into(),
@@ -147,4 +149,34 @@ fn log_replay_keeps_only_the_recent_window() {
     assert_eq!(replay.len(), 500);
     assert_eq!(replay.first().unwrap(), &(6, "line 6".into()));
     assert_eq!(replay.last().unwrap(), &(505, "line 505".into()));
+}
+
+#[test]
+fn cache_lanes_are_unique_for_concurrent_runners() {
+    let mut cached = repo("owner/project", 0, 2);
+    cached.docker_layer_cache = true;
+    let app = app(vec![cached.clone()], 2);
+    assert!(app.reserve_runner(
+        "first".into(),
+        RunnerInfo::new(cached.clone(), RunnerState::Starting, String::new()),
+    ));
+    assert!(app.reserve_runner(
+        "second".into(),
+        RunnerInfo::new(cached, RunnerState::Starting, String::new()),
+    ));
+    let runners = app.runners.lock().unwrap();
+    assert_eq!(runners["first"].docker_cache_slot, Some(0));
+    assert_eq!(runners["second"].docker_cache_slot, Some(1));
+}
+
+#[test]
+fn cache_volume_names_do_not_collide_when_repo_slugs_do() {
+    assert_ne!(
+        cache_volume_name("owner-a/project", 0),
+        cache_volume_name("owner/a-project", 0)
+    );
+    assert_eq!(
+        cache_volume_name("owner/project", 1),
+        cache_volume_name("owner/project", 1)
+    );
 }

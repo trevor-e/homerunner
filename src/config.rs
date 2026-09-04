@@ -30,6 +30,7 @@ struct RepoDefaults {
     job_timeout_min: Option<u64>,
     caffeinate: Option<bool>,
     registry_mirror: Option<String>,
+    docker_layer_cache: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -56,6 +57,7 @@ struct SupervisorSection {
     service_log_backups: Option<u32>,
     poll_interval_s: Option<u64>,
     idle_decay_min: Option<u64>,
+    docker_cache_max_age_days: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -116,6 +118,8 @@ pub struct RepoConfig {
     pub job_timeout_min: u64,
     pub caffeinate: bool,
     pub registry_mirror: Option<String>,
+    /// Reuse an isolated inner-Docker data volume for each concurrency slot.
+    pub docker_layer_cache: bool,
 }
 
 impl RepoConfig {
@@ -149,6 +153,8 @@ pub struct Config {
     pub poll_interval_s: u64,
     /// Minutes an idle burst runner (beyond reserved) lives before decay.
     pub idle_decay_min: u64,
+    /// Remove unused per-slot Docker caches after this many days (0 = off).
+    pub docker_cache_max_age_days: u64,
     pub auth_source: String,
     pub python_version: String,
     pub node_version: String,
@@ -210,6 +216,10 @@ pub fn load(path: &Path) -> Result<Config> {
                 .registry_mirror
                 .clone()
                 .or_else(|| d.registry_mirror.clone()),
+            docker_layer_cache: o
+                .docker_layer_cache
+                .or(d.docker_layer_cache)
+                .unwrap_or(false),
         });
     }
     if repos.is_empty() {
@@ -226,6 +236,12 @@ pub fn load(path: &Path) -> Result<Config> {
         }
         if rc.max == 0 {
             bail!("repo {}: max must be at least 1", rc.repo);
+        }
+        if rc.docker_layer_cache && rc.runtime != RuntimeKind::Docker {
+            bail!(
+                "repo {}: docker_layer_cache currently requires runtime = \"docker\"",
+                rc.repo
+            );
         }
     }
     if raw.supervisor.service_log_max_mb == Some(0) {
@@ -290,6 +306,7 @@ pub fn load(path: &Path) -> Result<Config> {
         service_log_backups: raw.supervisor.service_log_backups.unwrap_or(3),
         poll_interval_s: raw.supervisor.poll_interval_s.unwrap_or(30),
         idle_decay_min: raw.supervisor.idle_decay_min.unwrap_or(10),
+        docker_cache_max_age_days: raw.supervisor.docker_cache_max_age_days.unwrap_or(30),
         data_dir,
         auth_source: raw.auth.source.unwrap_or_else(|| "gh".into()),
         python_version: raw.toolchains.python.unwrap_or_else(|| "3.13.1".into()),
@@ -384,6 +401,7 @@ image = "runner:custom"
         assert_eq!(config.service_log_backups, 4);
         assert_eq!(config.poll_interval_s, 12);
         assert_eq!(config.idle_decay_min, 3);
+        assert_eq!(config.docker_cache_max_age_days, 30);
         assert_eq!(config.auth_source, "env:TEST_TOKEN");
         assert_eq!(config.python_version, "3.12");
         assert_eq!(config.node_version, "22");
@@ -398,6 +416,7 @@ image = "runner:custom"
         assert_eq!(first.job_timeout_min, 45);
         assert!(!first.caffeinate);
         assert_eq!(first.registry_mirror.as_deref(), Some("http://mirror"));
+        assert!(!first.docker_layer_cache);
 
         let second = &config.repos[1];
         assert_eq!(second.runtime, RuntimeKind::Docker);
@@ -431,6 +450,7 @@ image = "runner:custom"
         assert_eq!(config.event_history_days, 7);
         assert_eq!(config.service_log_max_bytes, 10 * 1024 * 1024);
         assert_eq!(config.service_log_backups, 3);
+        assert_eq!(config.docker_cache_max_age_days, 30);
         assert_eq!(config.repos[0].labels, ["self-hosted", "linux", "x64"]);
         assert_eq!(config.repos[0].reserved, 1);
         assert_eq!(config.repos[0].max, 2);
@@ -513,6 +533,31 @@ retain_workspace = true
     }
 
     #[test]
+    fn docker_layer_cache_is_opt_in_and_docker_only() {
+        let dir = TempDir::new("config-docker-cache");
+        let data_dir = dir.path().join("data");
+        let docker = write_config(
+            &dir,
+            &format!(
+                "[supervisor]\ndata_dir = \"{}\"\ndocker_cache_max_age_days = 14\n[[repos]]\nrepo = \"owner/project\"\ndocker_layer_cache = true\n",
+                toml_path(&data_dir)
+            ),
+        );
+        let config = load(&docker).unwrap();
+        assert!(config.repos[0].docker_layer_cache);
+        assert_eq!(config.docker_cache_max_age_days, 14);
+
+        let apple = write_config(
+            &dir,
+            "[[repos]]\nrepo = \"owner/project\"\nruntime = \"apple-container\"\ndocker_layer_cache = true\n",
+        );
+        assert!(load(&apple)
+            .unwrap_err()
+            .to_string()
+            .contains("requires runtime = \"docker\""));
+    }
+
+    #[test]
     fn repo_slug_is_stable() {
         let repo = RepoConfig {
             repo: "owner/project".into(),
@@ -524,6 +569,7 @@ retain_workspace = true
             job_timeout_min: 1,
             caffeinate: false,
             registry_mirror: None,
+            docker_layer_cache: false,
         };
         assert_eq!(repo.slug(), "owner-project");
     }

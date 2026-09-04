@@ -24,6 +24,13 @@ if ! docker info >/dev/null 2>&1; then
   # Degrade rather than die: jobs without services:/container: still run fine.
   echo "WARNING: inner dockerd failed to start; services: blocks will fail" >&2
   tail -n 20 /var/log/dockerd.log >&2 || true
+else
+  # A persistent layer-cache volume may contain runtime objects from the
+  # previous job. Keep images/build layers, but never carry containers,
+  # networks, or volumes (which may hold services and job data) across jobs.
+  docker ps -aq | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker volume prune -f >/dev/null 2>&1 || true
+  docker network prune -f >/dev/null 2>&1 || true
 fi
 
 # Volumes created by an older image may be root-owned; top-level chown is

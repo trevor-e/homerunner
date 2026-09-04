@@ -37,6 +37,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/jobs/{id}/logs", get(job_logs))
         .route("/api/analytics", get(analytics_api))
         .route("/api/logs/search", get(search_logs))
+        .route("/api/logs/search/suggestions", get(search_suggestions))
         .route("/api/disk", get(disk))
         .with_state(app)
 }
@@ -270,6 +271,10 @@ async fn search_logs(
     }
 }
 
+async fn search_suggestions(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    Json(crate::log_search::suggestions(&app.store.lock().unwrap()))
+}
+
 async fn state(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     let mut snapshot = app.snapshot();
     {
@@ -428,6 +433,8 @@ mod tests {
         assert!(SEARCH_HTML.contains("Global Log Search"));
         assert!(SEARCH_HTML.contains("step:"));
         assert!(SEARCH_HTML.contains("href=\"/analytics\""));
+        assert!(SEARCH_HTML.contains("role=\"combobox\""));
+        assert!(SEARCH_HTML.contains("/api/logs/search/suggestions"));
         for page in [INDEX_HTML, LOGS_INDEX_HTML, ANALYTICS_HTML, SEARCH_HTML] {
             assert!(page.matches("<span class=\"icon\"><svg").count() >= 4);
             assert!(!page.contains("<span class=\"icon\">⌂"));
@@ -642,5 +649,50 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["matches"], 1);
         assert_eq!(body["results"][0]["step_name"], "Run tests");
+    }
+
+    #[tokio::test]
+    async fn search_suggestions_expose_retained_job_metadata_and_steps() {
+        let dir = TempDir::new("web-search-suggestions");
+        let app = test_app(dir.path());
+        let capture = dir.path().join("jobs/88");
+        let diag = capture.join("diag");
+        std::fs::create_dir_all(&diag).unwrap();
+        std::fs::write(
+            diag.join("Worker_001.log"),
+            "Starting: Run tests\nchecking output\nFinishing: Run tests\n",
+        )
+        .unwrap();
+        {
+            let store = app.store.lock().unwrap();
+            let info = serde_json::json!({
+                "job_id": 88,
+                "workflow": "CI",
+                "job_name": "tests",
+                "head_branch": "main",
+            });
+            store.job_started(&info, "owner/project", "runner", Some(1.0));
+            store.job_concluded(88, "success");
+            store.set_job_artifacts(88, capture.to_str(), None, None);
+        }
+
+        let response = router(app)
+            .oneshot(
+                Request::get("/api/logs/search/suggestions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["indexed_jobs"], 1);
+        assert_eq!(body["indexed_lines"], 3);
+        assert_eq!(body["repos"][0], "owner/project");
+        assert_eq!(body["workflows"][0], "CI");
+        assert_eq!(body["job_names"][0], "tests");
+        assert_eq!(body["branches"][0], "main");
+        assert_eq!(body["steps"][0], "Run tests");
     }
 }

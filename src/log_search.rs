@@ -6,7 +6,7 @@ use crate::agent;
 use crate::store::Store;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct SearchQuery {
@@ -323,6 +323,56 @@ pub fn search(store: &Store, query: &SearchQuery) -> Result<Value> {
         "truncated": total_matches > results.len(),
         "results": results,
     }))
+}
+
+fn values(set: BTreeSet<String>) -> Value {
+    Value::Array(set.into_iter().take(200).map(Value::String).collect())
+}
+
+/// Values that make the log query language discoverable in the dashboard.
+/// Only jobs whose captured Worker logs can still be read are included.
+pub fn suggestions(store: &Store) -> Value {
+    let mut repos = BTreeSet::new();
+    let mut workflows = BTreeSet::new();
+    let mut job_names = BTreeSet::new();
+    let mut branches = BTreeSet::new();
+    let mut steps = BTreeSet::new();
+    let mut indexed_jobs = 0usize;
+    let mut indexed_lines = 0usize;
+
+    for job in store.jobs_with_logs(10_000) {
+        let Ok(log) = agent::read_worker_logs(&job) else {
+            continue;
+        };
+        indexed_jobs += 1;
+        for (set, key) in [
+            (&mut repos, "repo"),
+            (&mut workflows, "workflow"),
+            (&mut job_names, "job_name"),
+            (&mut branches, "head_branch"),
+        ] {
+            if let Some(value) = job[key].as_str().filter(|value| !value.is_empty()) {
+                set.insert(value.to_string());
+            }
+        }
+        for line in parse_lines(&log) {
+            indexed_lines += 1;
+            if let Some(step) = line.step_name.filter(|step| !step.is_empty()) {
+                steps.insert(step);
+            }
+        }
+    }
+
+    json!({
+        "indexed_jobs": indexed_jobs,
+        "indexed_lines": indexed_lines,
+        "repos": values(repos),
+        "workflows": values(workflows),
+        "job_names": values(job_names),
+        "branches": values(branches),
+        "steps": values(steps),
+        "levels": ["error", "warn", "info", "debug"],
+    })
 }
 
 pub fn steps(job: &Value) -> Result<Value> {

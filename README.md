@@ -99,6 +99,8 @@ Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 | `analytics [--repo …] [--workflow …] [--job-name …] [--since 30d] [--json]` | cross-run pass-rate, duration, CPU/memory, OOM, and regression analysis |
 | `why [job] [--json]` | failure digest: what ran, log excerpt around the error |
 | `logs [job]` | full captured step logs (`latest`, `latest-failed`, or an id) |
+| `search <query> [--since 30d] [--json]` | search retained logs across jobs with repo/workflow/branch/step/severity filters |
+| `steps [job] [--json]` | detected step line ranges and error/warning counts |
 | `exec [job] [-- cmd]` | shell inside a kept failed-job workspace; `-- cmd` runs one command, no TTY (for agents/scripts) |
 | `gc [--dry-run] [--json]` | reconcile retained artifacts and enforce cleanup policy |
 | `events [--json]` | follow the live event stream (`job_started`, `job_result`, `burst`, …; NDJSON with `--json`) |
@@ -116,6 +118,9 @@ The `/analytics` workspace groups completed runs by repository, workflow, and
 job, surfaces duration and memory percentiles, and calls out OOMs, intermittent
 failures, slow tails, and recent runtime regressions. The same report is
 available to agents through the `analyze_ci` MCP tool.
+The `/search` workspace searches retained log bodies globally and returns each
+matching line with its repository, workflow, job, branch, severity, and detected
+step. The same index is available through `search_logs` and `job_steps` MCP tools.
 
 Cleanup runs at supervisor startup, after completed jobs, and daily. Count
 limits can be combined with optional age and aggregate-size limits for job

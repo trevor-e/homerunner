@@ -2,6 +2,7 @@ mod agent;
 mod cleanup;
 mod config;
 mod github;
+mod log_search;
 mod logging;
 mod mcp;
 mod runtime;
@@ -69,6 +70,35 @@ enum Cmd {
     },
     /// Captured step logs for a job (id, 'latest', or 'latest-failed')
     Logs { job: Option<String> },
+    /// Search retained logs across jobs, with metadata and step filters
+    Search {
+        /// Text, quoted phrase, or filters such as repo:, branch:, step:, level:
+        query: String,
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        workflow: Option<String>,
+        #[arg(long)]
+        job_name: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+        #[arg(long)]
+        step: Option<String>,
+        #[arg(long)]
+        level: Option<String>,
+        #[arg(long, default_value = "30d")]
+        since: String,
+        #[arg(short = 'n', long, default_value = "100")]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Detected step boundaries and error counts for one captured job
+    Steps {
+        job: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Failure digest for a job (default: most recent failed job)
     Why {
         job: Option<String>,
@@ -209,6 +239,51 @@ async fn main() -> Result<()> {
             let store = store::Store::open_readonly(&cfg.db_path())?;
             let job = agent::resolve_job(&store, job.as_deref(), false)?;
             print!("{}", agent::read_worker_logs(&job)?);
+            Ok(())
+        }
+        Cmd::Search {
+            query,
+            repo,
+            workflow,
+            job_name,
+            branch,
+            step,
+            level,
+            since,
+            limit,
+            json,
+        } => {
+            let store = store::Store::open_readonly(&cfg.db_path())?;
+            let report = log_search::search(
+                &store,
+                &log_search::SearchQuery {
+                    q: Some(query),
+                    repo,
+                    workflow,
+                    job_name,
+                    branch,
+                    step,
+                    level,
+                    since: Some(since),
+                    limit: Some(limit),
+                },
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", log_search::search_text(&report));
+            }
+            Ok(())
+        }
+        Cmd::Steps { job, json } => {
+            let store = store::Store::open_readonly(&cfg.db_path())?;
+            let job = agent::resolve_job(&store, job.as_deref(), false)?;
+            let report = log_search::steps(&job)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", log_search::steps_text(&report));
+            }
             Ok(())
         }
         Cmd::Why { job, json } => {

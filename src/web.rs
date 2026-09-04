@@ -19,12 +19,14 @@ const INDEX_HTML: &str = include_str!("../assets/index.html");
 const LOGS_INDEX_HTML: &str = include_str!("../assets/logs_index.html");
 const LOGS_HTML: &str = include_str!("../assets/logs.html");
 const ANALYTICS_HTML: &str = include_str!("../assets/analytics.html");
+const SEARCH_HTML: &str = include_str!("../assets/search.html");
 
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/logs", get(logs_index))
         .route("/analytics", get(analytics_page))
+        .route("/search", get(search_page))
         .route("/jobs/{id}/logs", get(log_viewer))
         .route("/runners/{name}/logs", get(log_viewer))
         .route("/api/state", get(state))
@@ -34,6 +36,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/jobs/{id}", get(job))
         .route("/api/jobs/{id}/logs", get(job_logs))
         .route("/api/analytics", get(analytics_api))
+        .route("/api/logs/search", get(search_logs))
         .route("/api/disk", get(disk))
         .with_state(app)
 }
@@ -216,6 +219,10 @@ async fn analytics_page() -> Html<&'static str> {
     Html(ANALYTICS_HTML)
 }
 
+async fn search_page() -> Html<&'static str> {
+    Html(SEARCH_HTML)
+}
+
 async fn log_viewer() -> Html<&'static str> {
     Html(LOGS_HTML)
 }
@@ -237,6 +244,20 @@ async fn analytics_api(
 ) -> axum::response::Response {
     match agent::analytics(&app.store.lock().unwrap(), &query) {
         Ok(report) => Json(report).into_response(),
+        Err(error) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn search_logs(
+    State(app): State<Arc<App>>,
+    Query(query): Query<crate::log_search::SearchQuery>,
+) -> axum::response::Response {
+    match crate::log_search::search(&app.store.lock().unwrap(), &query) {
+        Ok(results) => Json(results).into_response(),
         Err(error) => (
             axum::http::StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": error.to_string()})),
@@ -396,6 +417,8 @@ mod tests {
         assert!(LOGS_HTML.contains("queueLiveLine"));
         assert!(ANALYTICS_HTML.contains("Job performance"));
         assert!(ANALYTICS_HTML.contains("Recommendations"));
+        assert!(SEARCH_HTML.contains("Global Log Search"));
+        assert!(SEARCH_HTML.contains("step:"));
     }
 
     #[tokio::test]
@@ -560,5 +583,45 @@ mod tests {
         );
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&body[..], b"first\nsecond\n");
+    }
+
+    #[tokio::test]
+    async fn global_search_endpoint_returns_step_context() {
+        let dir = TempDir::new("web-log-search");
+        let app = test_app(dir.path());
+        let capture = dir.path().join("jobs/77");
+        let diag = capture.join("diag");
+        std::fs::create_dir_all(&diag).unwrap();
+        std::fs::write(
+            diag.join("Worker_001.log"),
+            "Starting: Run tests\n##[error] connection refused\nFinishing: Run tests\n",
+        )
+        .unwrap();
+        {
+            let store = app.store.lock().unwrap();
+            let info = serde_json::json!({
+                "job_id": 77,
+                "workflow": "CI",
+                "job_name": "tests",
+                "head_branch": "main",
+            });
+            store.job_started(&info, "owner/project", "runner", Some(1.0));
+            store.job_concluded(77, "failure");
+            store.set_job_artifacts(77, capture.to_str(), None);
+        }
+
+        let response = router(app)
+            .oneshot(
+                Request::get("/api/logs/search?q=refused%20level%3Aerror&since=all")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["matches"], 1);
+        assert_eq!(body["results"][0]["step_name"], "Run tests");
     }
 }

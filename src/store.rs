@@ -407,6 +407,19 @@ impl Store {
         rows.filter_map(|row| row.ok()).collect()
     }
 
+    pub fn jobs_with_logs(&self, limit: u32) -> Vec<Value> {
+        self.rows(
+            "SELECT gh_job_id, repo, run_id, workflow, job_name, conclusion, runner_name,
+                    html_url, started_at, completed_at, log_dir, kept_image,
+                    head_branch, head_sha, title, event, peak_mem_mb, oom,
+                    cpu_avg_pct, cpu_peak_pct
+             FROM jobs WHERE log_dir IS NOT NULL
+             ORDER BY COALESCE(completed_at, started_at) DESC LIMIT ?1",
+            limit,
+            Self::job_row,
+        )
+    }
+
     pub fn recent_events(&self, limit: u32) -> Vec<Value> {
         self.rows(
             "SELECT ts, level, source, msg FROM events ORDER BY ts DESC LIMIT ?1",
@@ -529,6 +542,28 @@ mod tests {
                 ..JobFilter::default()
             })
             .is_empty());
+    }
+
+    #[test]
+    fn jobs_with_logs_excludes_uncaptured_jobs() {
+        let store = memory_store();
+        store.job_started(
+            &job_info(1, "captured"),
+            "owner/repo",
+            "runner-1",
+            Some(10.0),
+        );
+        store.job_started(
+            &job_info(2, "missing"),
+            "owner/repo",
+            "runner-2",
+            Some(20.0),
+        );
+        store.set_job_artifacts(1, Some("/logs/1"), None, None);
+
+        let jobs = store.jobs_with_logs(10);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["gh_job_id"], 1);
     }
 
     #[test]

@@ -102,11 +102,12 @@ const esc = value => { const n=document.createElement("div"); n.textContent=valu
 const safeExternal = value => { try { const url=new URL(value); return url.protocol==="https:" ? url.href : null; } catch { return null; } };
 const stripAnsi = value => value.replace(/[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
 const path = location.pathname;
+const requestedLine = Number.parseInt(new URLSearchParams(location.search).get("line") || "", 10) - 1;
 const jobMatch = path.match(/^\/jobs\/(\d+)\/logs\/?$/);
 const runnerMatch = path.match(/^\/runners\/([^/]+)\/logs\/?$/);
 const mode = jobMatch ? "job" : "runner";
 const sourceId = jobMatch ? jobMatch[1] : decodeURIComponent(runnerMatch?.[1] || "");
-let rawLines=[], rawSizes=[], rawBytes=0, lines=[], info=null, activeFilter="all", matches=[], matchIndex=-1, jsonLines=new Set(), source=null, flushTimer=null, pendingRaw=[], droppedLines=0;
+let rawLines=[], rawSizes=[], rawBytes=0, lines=[], info=null, activeFilter="all", matches=[], matchIndex=-1, focusLine=Number.isInteger(requestedLine)?requestedLine:-1, jsonLines=new Set(), source=null, flushTimer=null, pendingRaw=[], droppedLines=0;
 const MAX_RENDER = 3000, MAX_LIVE_LINES = 20000, LIVE_RENDER_MS = 250;
 const encoder = new TextEncoder();
 
@@ -118,11 +119,11 @@ function jsonHtml(value) { return esc(JSON.stringify(value, null, $("pretty").ch
 function searchRegex() { const q=$("query").value; if(!q)return null; try { return new RegExp($("regex").checked ? q : q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"), $("case").checked ? "g" : "gi"); } catch { return false; } }
 function highlighted(line) { const rx=searchRegex(), parsed=parseJson(line), display=parsed!==null&&$("pretty").checked?JSON.stringify(parsed,null,2):line; if(rx===false)return esc(display); if(!rx)return parsed===null?esc(display):jsonHtml(parsed); let cursor=0,out="",m; rx.lastIndex=0; while((m=rx.exec(display))!==null){out+=esc(display.slice(cursor,m.index))+`<mark>${esc(m[0])}</mark>`;cursor=m.index+m[0].length;if(!m[0].length)rx.lastIndex++;} return out+esc(display.slice(cursor)); }
 function visibleIndexes() { const out=[]; for(let i=0;i<lines.length;i++){ const kind=lineKind(lines[i]); if(activeFilter==="all"||activeFilter===kind||(activeFilter==="json"&&jsonLines.has(i)))out.push(i); } return out; }
-function updateSearch() { const rx=searchRegex(); matches=[]; matchIndex=-1; $("query").setCustomValidity(rx===false ? "Invalid regular expression" : ""); if(rx){ lines.forEach((line,i)=>{rx.lastIndex=0;if(rx.test(line))matches.push(i)}); if(matches.length)matchIndex=0; } $("matches").textContent=rx===false?"invalid":matches.length?`1 / ${matches.length}`:""; render(); if(matches.length)jumpToCurrent(); }
+function updateSearch() { focusLine=-1;const rx=searchRegex(); matches=[]; matchIndex=-1; $("query").setCustomValidity(rx===false ? "Invalid regular expression" : ""); if(rx){ lines.forEach((line,i)=>{rx.lastIndex=0;if(rx.test(line))matches.push(i)}); if(matches.length)matchIndex=0; } $("matches").textContent=rx===false?"invalid":matches.length?`1 / ${matches.length}`:""; render(); if(matches.length)jumpToCurrent(); }
 function render() {
   const visible=visibleIndexes(); let shown=visible, note="";
   if(visible.length>MAX_RENDER){ const anchor=matchIndex>=0 ? matches[matchIndex] : visible[visible.length-1]; let pos=Math.max(0,visible.indexOf(anchor)); const start=Math.max(0,Math.min(visible.length-MAX_RENDER,pos-Math.floor(MAX_RENDER/2))); shown=visible.slice(start,start+MAX_RENDER); note=`Showing ${shown.length.toLocaleString()} of ${visible.length.toLocaleString()} lines`; }
-  const current=matchIndex>=0?matches[matchIndex]:-1, matchSet=new Set(matches);
+  const current=matchIndex>=0?matches[matchIndex]:focusLine, matchSet=new Set(matches);
   $("viewer").innerHTML=`<div class="log">${shown.map(i=>`<div class="line ${lineKind(lines[i])} ${matchSet.has(i)?"hit":""} ${i===current?"current":""}" data-line="${i}"><span class="ln">${i+1}</span><span class="code">${highlighted(lines[i])||" "}</span></div>`).join("")}</div>`;
   if(droppedLines)note=`Keeping newest ${lines.length.toLocaleString()} lines · ${droppedLines.toLocaleString()} dropped from view`;
   $("viewer").classList.toggle("wrap",$("wrap").checked); $("render-note").textContent=note;
@@ -132,7 +133,7 @@ function jump(direction=0) { if(!matches.length)return; matchIndex=(matchIndex+d
 function jumpToCurrent(){ requestAnimationFrame(()=>document.querySelector(".line.current")?.scrollIntoView({block:"center"})); }
 function toast(msg){$("toast").textContent=msg;$("toast").classList.add("show");clearTimeout(toast.timer);toast.timer=setTimeout(()=>$("toast").classList.remove("show"),1500)}
 function rebuildIndexes(){jsonLines=new Set();matches=[];const rx=searchRegex();lines.forEach((line,i)=>{if(parseJson(line)!==null)jsonLines.add(i);if(rx&&rx!==false){rx.lastIndex=0;if(rx.test(line))matches.push(i)}});if(matchIndex>=matches.length)matchIndex=matches.length-1;}
-function updateLines(text){const normalized=text.replace(/\r\n/g,"\n");rawLines=normalized.split("\n");if(rawLines.at(-1)==="")rawLines.pop();rawSizes=rawLines.map(line=>encoder.encode(line).byteLength);lines=rawLines.map(stripAnsi);rawBytes=rawSizes.reduce((sum,size)=>sum+size,Math.max(0,rawLines.length-1));droppedLines=0;rebuildIndexes();render();}
+function updateLines(text){const normalized=text.replace(/\r\n/g,"\n");rawLines=normalized.split("\n");if(rawLines.at(-1)==="")rawLines.pop();rawSizes=rawLines.map(line=>encoder.encode(line).byteLength);lines=rawLines.map(stripAnsi);rawBytes=rawSizes.reduce((sum,size)=>sum+size,Math.max(0,rawLines.length-1));droppedLines=0;rebuildIndexes();if(focusLine>=lines.length)focusLine=-1;render();if(focusLine>=0)jumpToCurrent();}
 function queueLiveLine(rawLine){pendingRaw.push(rawLine);if(flushTimer===null)flushTimer=setTimeout(flushLive,LIVE_RENDER_MS);}
 function flushLive(){flushTimer=null;if(!pendingRaw.length)return;const viewer=$("viewer"),follow=viewer.scrollHeight-viewer.scrollTop-viewer.clientHeight<120,batch=pendingRaw.splice(0),sizes=batch.map(line=>encoder.encode(line).byteLength),clean=batch.map(stripAnsi),start=lines.length;rawBytes+=sizes.reduce((sum,size)=>sum+size,rawLines.length?batch.length:Math.max(0,batch.length-1));rawSizes=rawSizes.concat(sizes);rawLines=rawLines.concat(batch);lines=lines.concat(clean);const rx=searchRegex();clean.forEach((line,i)=>{const index=start+i;if(parseJson(line)!==null)jsonLines.add(index);if(rx&&rx!==false){rx.lastIndex=0;if(rx.test(line))matches.push(index)}});if(matchIndex<0&&matches.length)matchIndex=0;if(lines.length>MAX_LIVE_LINES){const remove=lines.length-MAX_LIVE_LINES,removedBytes=rawSizes.slice(0,remove).reduce((sum,size)=>sum+size,0);rawBytes-=removedBytes+remove;rawSizes.splice(0,remove);lines.splice(0,remove);rawLines.splice(0,remove);droppedLines+=remove;rebuildIndexes();}render();if(follow)viewer.scrollTop=viewer.scrollHeight;if(pendingRaw.length&&flushTimer===null)flushTimer=setTimeout(flushLive,LIVE_RENDER_MS);}
 function setHeader(data){

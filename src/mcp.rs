@@ -6,6 +6,7 @@
 
 use crate::agent;
 use crate::config::Config;
+use crate::log_search;
 use crate::store::Store;
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -40,6 +41,22 @@ fn tools() -> Value {
             "description": "Full captured step logs for one job (the runner's Worker diagnostics). job: numeric id, 'latest', or 'latest-failed' (default latest).",
             "inputSchema": { "type": "object", "properties": {
                 "job": { "type": "string", "description": "job id, 'latest', or 'latest-failed'" }
+            } }
+        },
+        {
+            "name": "search_logs",
+            "description": "Search all retained CI logs and return matching lines with repository, workflow, job, branch, step, severity, and line-number context. Query supports quoted phrases, exclusions, and repo:/workflow:/job_name:/branch:/step:/level: filters.",
+            "inputSchema": { "type": "object", "properties": {
+                "query": { "type": "string", "description": "text and/or property filters" },
+                "since": { "type": "string", "description": "lookback such as 24h, 7d, 4w, or all (default 30d)" },
+                "limit": { "type": "integer", "description": "maximum matching lines (default 100, max 1000)" }
+            }, "required": ["query"] }
+        },
+        {
+            "name": "job_steps",
+            "description": "Detected workflow steps for a captured job, with line ranges and error/warning counts.",
+            "inputSchema": { "type": "object", "properties": {
+                "job": { "type": "string", "description": "job id, latest, or latest-failed" }
             } }
         },
         {
@@ -81,6 +98,22 @@ async fn call_tool(cfg: &Config, dashboard_port: u16, params: &Value) -> String 
                 let lines: Vec<&str> = logs.lines().collect();
                 let tail = lines[lines.len().saturating_sub(1200)..].join("\n");
                 Ok(tail)
+            }
+            "search_logs" => {
+                let report = log_search::search(
+                    &store,
+                    &log_search::SearchQuery {
+                        q: args["query"].as_str().map(str::to_string),
+                        since: args["since"].as_str().map(str::to_string),
+                        limit: args["limit"].as_u64().map(|value| value as usize),
+                        ..log_search::SearchQuery::default()
+                    },
+                )?;
+                Ok(serde_json::to_string_pretty(&report)?)
+            }
+            "job_steps" => {
+                let job = agent::resolve_job(&store, args["job"].as_str(), false)?;
+                Ok(serde_json::to_string_pretty(&log_search::steps(&job)?)?)
             }
             "why_failed" => Ok(agent::why_text(&agent::why(&store, args["job"].as_str())?)),
             other => anyhow::bail!("unknown tool: {other}"),

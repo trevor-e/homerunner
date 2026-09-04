@@ -347,3 +347,32 @@ impl RuntimeKind {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_container_memory_units() {
+        assert_eq!(parse_mem_bytes("0B"), 0);
+        assert_eq!(parse_mem_bytes("512KiB"), 512 * 1024);
+        assert_eq!(parse_mem_bytes("1.5MiB"), 1_572_864);
+        assert_eq!(parse_mem_bytes("2GiB"), 2 * 1024 * 1024 * 1024);
+        assert_eq!(parse_mem_bytes("3.2MB"), 3_355_443);
+        assert_eq!(parse_mem_bytes(" 42 "), 42);
+    }
+
+    #[test]
+    fn invalid_memory_values_are_zero() {
+        assert_eq!(parse_mem_bytes("not-a-size"), 0);
+        assert_eq!(parse_mem_bytes(""), 0);
+    }
+
+    #[test]
+    fn runtime_names_match_configuration_values() {
+        assert_eq!(RuntimeKind::Docker.name(), "docker");
+        assert_eq!(RuntimeKind::AppleContainer.name(), "apple-container");
+        assert_eq!(RuntimeKind::Docker.cli(), "docker");
+        assert_eq!(RuntimeKind::AppleContainer.cli(), "container");
+    }
+}

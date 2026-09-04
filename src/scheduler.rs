@@ -15,6 +15,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast;
 
+pub type LogLine = (u64, String);
+pub type LogSubscription = (Vec<LogLine>, broadcast::Receiver<LogLine>);
+
 static RUNNING_JOB_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Running job: (?<job>.+)$").unwrap());
 static COMPLETED_RE: LazyLock<Regex> =
@@ -29,6 +32,7 @@ fn now() -> f64 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunnerState {
+    Starting,
     Listening,
     Busy,
     Exited,
@@ -38,6 +42,7 @@ pub enum RunnerState {
 impl RunnerState {
     fn name(self) -> &'static str {
         match self {
+            RunnerState::Starting => "starting",
             RunnerState::Listening => "listening",
             RunnerState::Busy => "busy",
             RunnerState::Exited => "exited",
@@ -46,6 +51,13 @@ impl RunnerState {
     }
     fn live(self) -> bool {
         matches!(self, RunnerState::Listening | RunnerState::Busy)
+    }
+
+    fn occupies_slot(self) -> bool {
+        matches!(
+            self,
+            RunnerState::Starting | RunnerState::Listening | RunnerState::Busy
+        )
     }
 }
 
@@ -62,10 +74,55 @@ pub struct RunnerInfo {
     /// the reap path logs it as decay rather than a crash (no backoff).
     pub decaying: bool,
     pub job: Value, // {job_name, job_id, run_id, workflow, html_url, conclusion}
-    pub log_tail: VecDeque<String>,
+    pub log_tail: VecDeque<LogLine>,
+    pub next_log_seq: u64,
+    pub log_tx: broadcast::Sender<LogLine>,
     pub cpu_pct: f64,
     pub mem_bytes: u64,
     pub peak_mem_bytes: u64,
+}
+
+impl RunnerInfo {
+    fn new(repo_cfg: RepoConfig, state: RunnerState, container_id: String) -> Self {
+        Self {
+            repo_cfg,
+            state,
+            container_id,
+            gh_runner_id: None,
+            created_at: now(),
+            busy_at: None,
+            ran_job: false,
+            decaying: false,
+            job: json!({}),
+            log_tail: VecDeque::new(),
+            next_log_seq: 0,
+            log_tx: broadcast::channel(512).0,
+            cpu_pct: 0.0,
+            mem_bytes: 0,
+            peak_mem_bytes: 0,
+        }
+    }
+
+    fn push_log(&mut self, line: String) {
+        self.next_log_seq += 1;
+        let seq = self.next_log_seq;
+        self.log_tail.push_back((seq, line.clone()));
+        if self.log_tail.len() > 500 {
+            self.log_tail.pop_front();
+        }
+        let _ = self.log_tx.send((seq, line));
+    }
+
+    pub fn subscribe_logs(&self, after_id: u64) -> LogSubscription {
+        let rx = self.log_tx.subscribe();
+        let replay = self
+            .log_tail
+            .iter()
+            .filter(|(id, _)| *id > after_id)
+            .cloned()
+            .collect();
+        (replay, rx)
+    }
 }
 
 pub struct App {
@@ -121,8 +178,22 @@ impl App {
             .lock()
             .unwrap()
             .values()
-            .filter(|r| r.state.live() && repo.is_none_or(|repo| r.repo_cfg.repo == repo))
+            .filter(|r| r.state.occupies_slot() && repo.is_none_or(|repo| r.repo_cfg.repo == repo))
             .count() as u32
+    }
+
+    fn reserve_runner(&self, name: String, info: RunnerInfo) -> bool {
+        let mut runners = self.runners.lock().unwrap();
+        let repo_slots = runners
+            .values()
+            .filter(|r| r.state.occupies_slot() && r.repo_cfg.repo == info.repo_cfg.repo)
+            .count() as u32;
+        let total_slots = runners.values().filter(|r| r.state.occupies_slot()).count() as u32;
+        if repo_slots >= info.repo_cfg.max || total_slots >= self.config.max_total_runners {
+            return false;
+        }
+        runners.insert(name, info);
+        true
     }
 
     fn record_runner(&self, name: &str, ended_at: Option<f64>, exit_code: Option<i64>) {
@@ -165,8 +236,11 @@ impl App {
 
     pub fn snapshot(&self) -> Value {
         let runners = self.runners.lock().unwrap();
+        let repo_capacity: u32 = self.config.repos.iter().map(|rc| rc.max).sum();
         json!({
             "degraded": *self.degraded.lock().unwrap(),
+            "capacity": repo_capacity.min(self.config.max_total_runners),
+            "max_total_runners": self.config.max_total_runners,
             "repos": self.config.repos.iter().map(|rc| json!({
                 "repo": rc.repo,
                 "runtime": rc.runtime.name(),
@@ -184,7 +258,7 @@ impl App {
                     "created_at": r.created_at,
                     "busy_at": r.busy_at,
                     "job": r.job,
-                    "log_tail": r.log_tail.iter().rev().take(8).rev().collect::<Vec<_>>(),
+                    "log_tail": r.log_tail.iter().rev().take(8).rev().map(|(_, line)| line).collect::<Vec<_>>(),
                     "cpu_pct": r.cpu_pct,
                     "mem_bytes": r.mem_bytes,
                 })).collect::<Vec<_>>(),
@@ -269,7 +343,9 @@ async fn burst_poller(app: Arc<App>) {
                     &format!("{}: {queued} queued job(s), scaling up", repo_cfg.repo),
                 );
                 app.emit("burst", json!({"repo": repo_cfg.repo, "queued": queued}));
-                spawn_runner(&app, repo_cfg).await;
+                if !spawn_runner(&app, repo_cfg).await {
+                    break;
+                }
             }
         }
     }
@@ -360,21 +436,7 @@ async fn adopt_orphans(app: &Arc<App>) {
                 (true, Some(repo_cfg)) => {
                     app.runners.lock().unwrap().insert(
                         mc.runner_name.clone(),
-                        RunnerInfo {
-                            repo_cfg,
-                            state: RunnerState::Listening,
-                            container_id: mc.container_id.clone(),
-                            gh_runner_id: None,
-                            created_at: now(),
-                            busy_at: None,
-                            ran_job: false,
-                            decaying: false,
-                            job: json!({}),
-                            log_tail: VecDeque::new(),
-                            cpu_pct: 0.0,
-                            mem_bytes: 0,
-                            peak_mem_bytes: 0,
-                        },
+                        RunnerInfo::new(repo_cfg, RunnerState::Listening, mc.container_id.clone()),
                     );
                     start_watchers(app, &mc.runner_name, kind, &mc.container_id);
                     app.log(
@@ -440,31 +502,25 @@ async fn top_up(app: &Arc<App>, repo_cfg: &RepoConfig) {
     while app.live_count(Some(&repo_cfg.repo)) < repo_cfg.reserved
         && app.live_count(None) < app.config.max_total_runners
     {
-        spawn_runner(app, repo_cfg).await;
+        if !spawn_runner(app, repo_cfg).await {
+            break;
+        }
     }
 }
 
-async fn spawn_runner(app: &Arc<App>, repo_cfg: &RepoConfig) {
+async fn spawn_runner(app: &Arc<App>, repo_cfg: &RepoConfig) -> bool {
     let name = format!(
         "hr-{}-{:06x}",
         repo_cfg.slug(),
         rand::random::<u32>() & 0xff_ffff
     );
-    let mut info = RunnerInfo {
-        repo_cfg: repo_cfg.clone(),
-        state: RunnerState::Listening,
-        container_id: String::new(),
-        gh_runner_id: None,
-        created_at: now(),
-        busy_at: None,
-        ran_job: false,
-        decaying: false,
-        job: json!({}),
-        log_tail: VecDeque::new(),
-        cpu_pct: 0.0,
-        mem_bytes: 0,
-        peak_mem_bytes: 0,
-    };
+    let mut info = RunnerInfo::new(repo_cfg.clone(), RunnerState::Starting, String::new());
+
+    // Reserve before awaiting GitHub or the runtime. Reap/top-up tasks run
+    // concurrently and otherwise can race past the per-repo or global cap.
+    if !app.reserve_runner(name.clone(), info.clone()) {
+        return false;
+    }
 
     let spawned = async {
         let (gh_id, jit) = app
@@ -487,9 +543,15 @@ async fn spawn_runner(app: &Arc<App>, repo_cfg: &RepoConfig) {
 
     match spawned {
         Ok((gh_id, container_id)) => {
-            info.gh_runner_id = Some(gh_id);
-            info.container_id = container_id.clone();
-            app.runners.lock().unwrap().insert(name.clone(), info);
+            {
+                let mut runners = app.runners.lock().unwrap();
+                let Some(current) = runners.get_mut(&name) else {
+                    return false;
+                };
+                current.state = RunnerState::Listening;
+                current.gh_runner_id = Some(gh_id);
+                current.container_id = container_id.clone();
+            }
             start_watchers(app, &name, repo_cfg.runtime, &container_id);
             app.record_runner(&name, None, None);
             app.log(
@@ -501,6 +563,7 @@ async fn spawn_runner(app: &Arc<App>, repo_cfg: &RepoConfig) {
                 "runner_listening",
                 json!({"runner": name, "repo": repo_cfg.repo}),
             );
+            true
         }
         Err(err) => {
             info.state = RunnerState::Failed;
@@ -512,6 +575,7 @@ async fn spawn_runner(app: &Arc<App>, repo_cfg: &RepoConfig) {
                 .or_default() += 1;
             app.record_runner(&name, Some(now()), None);
             app.log("error", "spawn", &format!("{name} failed: {err}"));
+            false
         }
     }
 }
@@ -734,10 +798,7 @@ async fn watch_logs(
             let Some(info) = runners.get_mut(&name) else {
                 break;
             };
-            info.log_tail.push_back(line.clone());
-            if info.log_tail.len() > 40 {
-                info.log_tail.pop_front();
-            }
+            info.push_log(line.clone());
             if let Some(caps) = RUNNING_JOB_RE.captures(&line) {
                 // The runner prints each diagnostic both bare and timestamped.
                 if info.state != RunnerState::Busy {
@@ -1011,3 +1072,7 @@ async fn watchdog(app: Arc<App>) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "scheduler_tests.rs"]
+mod tests;

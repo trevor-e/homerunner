@@ -158,3 +158,125 @@ pub fn jobs_table(jobs: &[Value]) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TempDir;
+    use std::path::Path;
+
+    #[test]
+    fn worker_logs_are_filtered_and_joined_in_filename_order() {
+        let dir = TempDir::new("worker-logs");
+        let diag = dir.path().join("diag");
+        std::fs::create_dir(&diag).unwrap();
+        std::fs::write(diag.join("Worker_002.log"), "second\n").unwrap();
+        std::fs::write(diag.join("Worker_001.log"), "first\n").unwrap();
+        std::fs::write(diag.join("Runner_001.log"), "ignored\n").unwrap();
+
+        let job = json!({"log_dir": dir.path().to_string_lossy()});
+        assert_eq!(read_worker_logs(&job).unwrap(), "first\nsecond\n");
+    }
+
+    #[test]
+    fn worker_logs_explain_missing_capture() {
+        let error = read_worker_logs(&json!({})).unwrap_err().to_string();
+        assert!(error.contains("no captured logs"));
+    }
+
+    #[test]
+    fn failure_excerpt_centers_on_the_last_error() {
+        let log = (0..=100)
+            .map(|i| match i {
+                70 => "line 70 ##[error] first".into(),
+                90 => "line 90 Process completed with exit code 1".into(),
+                _ => format!("line {i}"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let excerpt = failure_excerpt(&log);
+        assert!(excerpt.starts_with("line 60\n"));
+        assert!(excerpt.contains("line 90 Process completed with exit code 1"));
+        assert!(excerpt.ends_with("line 99"));
+        assert!(!excerpt.contains("line 59\n"));
+        assert!(!excerpt.contains("line 100"));
+    }
+
+    #[test]
+    fn failure_excerpt_falls_back_to_last_forty_lines() {
+        let log = (0..50)
+            .map(|i| format!("ordinary line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let excerpt = failure_excerpt(&log);
+
+        assert_eq!(excerpt.lines().count(), 40);
+        assert!(excerpt.starts_with("ordinary line 10\n"));
+        assert!(excerpt.ends_with("ordinary line 49"));
+    }
+
+    #[test]
+    fn resolve_job_supports_ids_and_reports_bad_specs() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let info = json!({"job_id": 42, "job_name": "tests"});
+        store.job_started(&info, "owner/repo", "runner", Some(1.0));
+
+        assert_eq!(
+            resolve_job(&store, Some("42"), false).unwrap()["gh_job_id"],
+            42
+        );
+        assert!(resolve_job(&store, Some("not-an-id"), false)
+            .unwrap_err()
+            .to_string()
+            .contains("job must be a numeric id"));
+        assert!(resolve_job(&store, Some("99"), false)
+            .unwrap_err()
+            .to_string()
+            .contains("no job 99 recorded"));
+    }
+
+    #[test]
+    fn jobs_table_includes_duration_and_artifact_state() {
+        let output = jobs_table(&[json!({
+            "gh_job_id": 42,
+            "conclusion": "failure",
+            "repo": "owner/repo",
+            "job_name": "tests",
+            "started_at": 10.0,
+            "completed_at": 75.6,
+            "log_dir": "/logs/42",
+            "kept_image": "kept:42",
+        })]);
+
+        assert!(output.contains("66s"));
+        assert!(output.contains("logs+workspace"));
+        assert_eq!(jobs_table(&[]), "no jobs recorded\n");
+    }
+
+    #[test]
+    fn why_text_surfaces_resource_and_post_mortem_details() {
+        let output = why_text(&json!({
+            "job": {
+                "repo": "owner/repo",
+                "workflow": "CI",
+                "job_name": "tests",
+                "conclusion": "failure",
+                "html_url": "https://example.test/job/42",
+                "head_sha": "123456789abcdef",
+                "head_branch": "main",
+                "event": "push",
+                "title": "A change",
+                "peak_mem_mb": 512.0,
+                "oom": true,
+            },
+            "post_mortem": "workspace kept",
+            "excerpt": "the failure",
+        }));
+
+        assert!(output.contains("main @ 123456789 (push)"));
+        assert!(output.contains("peak memory: 512 MB — OOM-KILLED"));
+        assert!(output.contains("workspace kept"));
+        assert!(output.contains("the failure"));
+    }
+}

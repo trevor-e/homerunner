@@ -106,6 +106,15 @@ pretty-printing, copy/download actions, and live streaming from active runners.
   runners that are a few versions stale (the supervisor logs the latest daily).
 - Jobs queue while the Mac sleeps; `caffeinate = true` keeps it awake mid-job.
 
+## Development
+
+Run the automated suite and strict lint checks with:
+
+```sh
+cargo test
+cargo clippy --all-targets -- -D warnings
+```
+
 ## Related: local-ci
 
 [local-ci](https://github.com/redwoodjs/local-ci) is the other half of this

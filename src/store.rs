@@ -290,3 +290,164 @@ impl Store {
         mapped.filter_map(|r| r.ok()).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TempDir;
+
+    fn memory_store() -> Store {
+        Store::open(Path::new(":memory:")).unwrap()
+    }
+
+    fn job_info(id: i64, name: &str) -> Value {
+        json!({
+            "job_id": id,
+            "run_id": id * 10,
+            "workflow": "CI",
+            "job_name": name,
+            "html_url": format!("https://example.test/jobs/{id}"),
+            "head_branch": "main",
+            "head_sha": format!("sha-{id}"),
+            "title": format!("Change {id}"),
+            "event": "push",
+        })
+    }
+
+    #[test]
+    fn job_lifecycle_round_trips_dashboard_fields() {
+        let store = memory_store();
+        store.job_started(&job_info(42, "tests"), "owner/repo", "runner-1", Some(10.0));
+        store.set_job_artifacts(42, Some("/logs/42"), Some("kept:42"));
+        store.set_job_resources(42, 384.0, true);
+        store.job_concluded(42, "failure");
+
+        let job = store.job(42).unwrap();
+        assert_eq!(job["repo"], "owner/repo");
+        assert_eq!(job["workflow"], "CI");
+        assert_eq!(job["job_name"], "tests");
+        assert_eq!(job["runner_name"], "runner-1");
+        assert_eq!(job["started_at"], 10.0);
+        assert!(job["completed_at"].as_f64().unwrap() >= 10.0);
+        assert_eq!(job["conclusion"], "failure");
+        assert_eq!(job["log_dir"], "/logs/42");
+        assert_eq!(job["kept_image"], "kept:42");
+        assert_eq!(job["peak_mem_mb"], 384.0);
+        assert_eq!(job["oom"], true);
+        assert_eq!(job["head_branch"], "main");
+        assert_eq!(job["head_sha"], "sha-42");
+        assert_eq!(job["title"], "Change 42");
+        assert_eq!(job["event"], "push");
+    }
+
+    #[test]
+    fn recent_jobs_are_newest_first_and_honor_limit() {
+        let store = memory_store();
+        store.job_started(&job_info(1, "old"), "owner/repo", "runner-1", Some(10.0));
+        store.job_started(&job_info(2, "new"), "owner/repo", "runner-2", Some(20.0));
+
+        let jobs = store.recent_jobs(1);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["gh_job_id"], 2);
+    }
+
+    #[test]
+    fn latest_failed_ignores_newer_successful_jobs() {
+        let store = memory_store();
+        store.job_started(&job_info(1, "failed"), "owner/repo", "runner-1", Some(10.0));
+        store.job_concluded(1, "failure");
+        store.job_started(&job_info(2, "passed"), "owner/repo", "runner-2", Some(20.0));
+        store.job_concluded(2, "success");
+        store
+            .db
+            .execute("UPDATE jobs SET completed_at=10 WHERE gh_job_id=1", [])
+            .unwrap();
+        store
+            .db
+            .execute("UPDATE jobs SET completed_at=20 WHERE gh_job_id=2", [])
+            .unwrap();
+
+        assert_eq!(store.latest_job(false).unwrap()["gh_job_id"], 2);
+        assert_eq!(store.latest_job(true).unwrap()["gh_job_id"], 1);
+    }
+
+    #[test]
+    fn artifact_references_can_be_cleared_after_gc() {
+        let store = memory_store();
+        store.job_started(&job_info(7, "failed"), "owner/repo", "runner", Some(1.0));
+        store.set_job_artifacts(7, Some("/logs/7"), Some("kept:7"));
+
+        assert_eq!(store.kept_images(), vec![(7, "kept:7".into())]);
+        store.clear_log_dir("/logs/7");
+        store.clear_kept_image(7);
+
+        let job = store.job(7).unwrap();
+        assert!(job["log_dir"].is_null());
+        assert!(job["kept_image"].is_null());
+        assert!(store.kept_images().is_empty());
+    }
+
+    #[test]
+    fn event_pruning_removes_only_expired_rows() {
+        let store = memory_store();
+        store
+            .db
+            .execute(
+                "INSERT INTO events (ts, level, source, msg) VALUES (0, 'info', 'old', 'expired')",
+                [],
+            )
+            .unwrap();
+        store.event("warn", "new", "current");
+
+        store.prune_events(60.0);
+        let events = store.recent_events(10);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["source"], "new");
+        assert_eq!(events[0]["msg"], "current");
+    }
+
+    #[test]
+    fn opening_an_old_database_applies_additive_migrations() {
+        let dir = TempDir::new("store-migrations");
+        let path = dir.path().join("journal.db");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch(SCHEMA).unwrap();
+        drop(db);
+
+        let store = Store::open(&path).unwrap();
+        let mut statement = store.db.prepare("PRAGMA table_info(jobs)").unwrap();
+        let columns: Vec<String> = statement
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for expected in [
+            "log_dir",
+            "kept_image",
+            "head_branch",
+            "head_sha",
+            "title",
+            "event",
+            "peak_mem_mb",
+            "oom",
+        ] {
+            assert!(columns.iter().any(|column| column == expected));
+        }
+    }
+
+    #[test]
+    fn readonly_store_rejects_writes() {
+        let dir = TempDir::new("store-readonly");
+        let path = dir.path().join("journal.db");
+        drop(Store::open(&path).unwrap());
+        let store = Store::open_readonly(&path).unwrap();
+
+        assert!(store
+            .db
+            .execute(
+                "INSERT INTO events (ts, level, source, msg) VALUES (0, 'info', 'test', 'no')",
+                [],
+            )
+            .is_err());
+    }
+}

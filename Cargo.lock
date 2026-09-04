@@ -490,6 +490,7 @@ dependencies = [
  "clap",
  "dirs",
  "futures",
+ "http-body-util",
  "rand 0.9.5",
  "regex",
  "reqwest",
@@ -499,6 +500,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "toml",
+ "tower",
 ]
 
 [[package]]

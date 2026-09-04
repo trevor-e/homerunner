@@ -247,11 +247,14 @@ function renderMetrics() {
   const passed = completed.filter(j => j.conclusion === "success").length;
   const active = snapshot.runners.filter(r => r.state === "busy").length;
   const live = snapshot.runners.length;
-  const capacity = snapshot.repos.reduce((n,r) => n + (r.max || 0), 0);
+  const capacity = snapshot.capacity ?? snapshot.repos.reduce((n,r) => n + (r.max || 0), 0);
   const durations = completed.filter(j => j.started_at && j.completed_at).map(j => j.completed_at - j.started_at);
   const med = median(durations);
-  $("m-capacity").textContent = `${live} / ${capacity}`;
-  $("m-capacity-foot").innerHTML = `<span class="good">${snapshot.runners.filter(r => r.state === "listening").length} ready</span> · ${Math.max(0,capacity-live)} elastic slots`;
+  const overCapacity = live > capacity;
+  $("m-capacity").textContent = overCapacity ? `${live} live` : `${live} / ${capacity}`;
+  $("m-capacity-foot").innerHTML = overCapacity
+    ? `<span class="bad">limit ${capacity} · ${live-capacity} draining</span>`
+    : `<span class="good">${snapshot.runners.filter(r => r.state === "listening").length} ready</span> · ${Math.max(0,capacity-live)} elastic slots`;
   $("m-active").textContent = active;
   $("m-active-foot").textContent = active ? `${active} active` : "Idle";
   $("m-pass").textContent = completed.length ? Math.round(passed / completed.length * 100) + "%" : "—";

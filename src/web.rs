@@ -3,6 +3,7 @@
 
 use crate::scheduler::App;
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::response::sse::{Event, Sse};
 use axum::response::{Html, IntoResponse, Json};
 use axum::routing::get;
@@ -10,7 +11,7 @@ use axum::Router;
 use futures::stream::Stream;
 use std::convert::Infallible;
 use std::sync::Arc;
-use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
+use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
 const INDEX_HTML: &str = include_str!("../assets/index.html");
@@ -228,25 +229,228 @@ async fn events(State(app): State<Arc<App>>) -> Sse<impl Stream<Item = Result<Ev
 async fn runner_logs(
     State(app): State<Arc<App>>,
     Path(name): Path<String>,
+    headers: HeaderMap,
 ) -> axum::response::Response {
+    let last_id = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
     let target = {
         let runners = app.runners.lock().unwrap();
-        runners
-            .get(&name)
-            .map(|r| (r.repo_cfg.runtime, r.container_id.clone()))
+        runners.get(&name).map(|r| r.subscribe_logs(last_id))
     };
-    let Some((kind, container_id)) = target else {
+    let Some((replay, rx)) = target else {
         return (
             axum::http::StatusCode::NOT_FOUND,
             format!("no live runner {name}"),
         )
             .into_response();
     };
-    let Ok(rx) = kind.logs(&container_id) else {
-        return (axum::http::StatusCode::BAD_GATEWAY, "log stream failed").into_response();
+    let event = |(id, line): (u64, String)| {
+        Ok::<_, Infallible>(
+            Event::default()
+                .id(id.to_string())
+                .data(serde_json::json!(line).to_string()),
+        )
     };
-    let stream = ReceiverStream::new(rx).map(|line| {
-        Ok::<_, Infallible>(Event::default().data(serde_json::json!(line).to_string()))
-    });
+    let initial = tokio_stream::iter(replay.into_iter().map(event));
+    let live = BroadcastStream::new(rx).filter_map(move |message| message.ok().map(event));
+    let stream = initial.chain(live);
     Sse::new(stream).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, RepoConfig, RuntimeKind};
+    use crate::github::GitHub;
+    use crate::scheduler::{RunnerInfo, RunnerState};
+    use crate::store::Store;
+    use crate::test_support::TempDir;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use std::collections::VecDeque;
+    use std::path::Path;
+    use tokio::sync::broadcast;
+    use tower::ServiceExt;
+
+    fn repo() -> RepoConfig {
+        RepoConfig {
+            repo: "owner/project".into(),
+            runtime: RuntimeKind::Docker,
+            labels: vec!["self-hosted".into()],
+            image: "runner:test".into(),
+            reserved: 1,
+            max: 3,
+            job_timeout_min: 60,
+            caffeinate: false,
+            registry_mirror: None,
+        }
+    }
+
+    fn test_app(data_dir: &Path) -> Arc<App> {
+        App::new(
+            Config {
+                dashboard_port: 0,
+                max_total_runners: 2,
+                data_dir: data_dir.into(),
+                keep_failed_workspaces: 1,
+                keep_job_logs: 10,
+                poll_interval_s: 30,
+                idle_decay_min: 10,
+                auth_source: "env:HOMERUNNER_TEST_TOKEN".into(),
+                python_version: "3.13".into(),
+                node_version: "24".into(),
+                repos: vec![repo()],
+            },
+            GitHub::new("env:HOMERUNNER_TEST_TOKEN"),
+            Store::open(Path::new(":memory:")).unwrap(),
+        )
+    }
+
+    #[test]
+    fn directory_stats_count_top_level_jobs_and_nested_bytes() {
+        let dir = TempDir::new("dir-stats");
+        let first = dir.path().join("job-1");
+        let nested = dir.path().join("job-2/diag");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(first.join("one.log"), b"123").unwrap();
+        std::fs::write(nested.join("two.log"), b"4567").unwrap();
+
+        assert_eq!(dir_stats(dir.path()), (2, 7));
+    }
+
+    #[test]
+    fn directory_stats_are_empty_for_missing_path() {
+        let dir = TempDir::new("dir-stats-missing");
+        assert_eq!(dir_stats(&dir.path().join("missing")), (0, 0));
+    }
+
+    #[test]
+    fn embedded_log_pages_include_duration_and_bounded_live_rendering() {
+        assert!(LOGS_INDEX_HTML.contains("<th>Duration</th>"));
+        assert!(LOGS_HTML.contains("MAX_LIVE_LINES = 20000"));
+        assert!(LOGS_HTML.contains("queueLiveLine"));
+    }
+
+    #[tokio::test]
+    async fn state_endpoint_exposes_effective_capacity() {
+        let dir = TempDir::new("web-state");
+        let response = router(test_app(dir.path()))
+            .oneshot(Request::get("/api/state").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["capacity"], 2);
+        assert_eq!(body["max_total_runners"], 2);
+        assert_eq!(body["repos"][0]["max"], 3);
+    }
+
+    #[tokio::test]
+    async fn live_log_endpoint_resumes_after_last_event_id() {
+        let dir = TempDir::new("web-live-logs");
+        let app = test_app(dir.path());
+        let (log_tx, _) = broadcast::channel(16);
+        app.runners.lock().unwrap().insert(
+            "runner-1".into(),
+            RunnerInfo {
+                repo_cfg: repo(),
+                state: RunnerState::Listening,
+                container_id: "container-1".into(),
+                gh_runner_id: Some(1),
+                created_at: 1.0,
+                busy_at: None,
+                ran_job: false,
+                decaying: false,
+                job: serde_json::json!({}),
+                log_tail: VecDeque::from([
+                    (1, "first".into()),
+                    (2, "second".into()),
+                    (3, "third".into()),
+                ]),
+                next_log_seq: 3,
+                log_tx,
+                cpu_pct: 0.0,
+                mem_bytes: 0,
+                peak_mem_bytes: 0,
+            },
+        );
+        let response = router(app)
+            .oneshot(
+                Request::get("/api/runners/runner-1/logs")
+                    .header("last-event-id", "2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_TYPE],
+            "text/event-stream"
+        );
+
+        let frame = response.into_body().frame().await.unwrap().unwrap();
+        let chunk = std::str::from_utf8(frame.data_ref().unwrap()).unwrap();
+        assert!(chunk.contains("id: 3"));
+        assert!(chunk.contains("data: \"third\""));
+        assert!(!chunk.contains("second"));
+    }
+
+    #[tokio::test]
+    async fn missing_live_runner_returns_not_found() {
+        let dir = TempDir::new("web-missing-runner");
+        let response = router(test_app(dir.path()))
+            .oneshot(
+                Request::get("/api/runners/missing/logs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn captured_log_endpoint_returns_sorted_worker_logs() {
+        let dir = TempDir::new("web-job-logs");
+        let app = test_app(dir.path());
+        let capture = dir.path().join("jobs/42");
+        let diag = capture.join("diag");
+        std::fs::create_dir_all(&diag).unwrap();
+        std::fs::write(diag.join("Worker_002.log"), "second\n").unwrap();
+        std::fs::write(diag.join("Worker_001.log"), "first\n").unwrap();
+        {
+            let store = app.store.lock().unwrap();
+            store.job_started(
+                &serde_json::json!({"job_id": 42, "job_name": "tests"}),
+                "owner/project",
+                "runner-1",
+                Some(10.0),
+            );
+            store.set_job_artifacts(42, Some(capture.to_string_lossy().as_ref()), None);
+        }
+
+        let response = router(app)
+            .oneshot(
+                Request::get("/api/jobs/42/logs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_TYPE],
+            "text/plain; charset=utf-8"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"first\nsecond\n");
+    }
 }

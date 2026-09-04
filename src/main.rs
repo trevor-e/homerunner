@@ -5,6 +5,8 @@ mod mcp;
 mod runtime;
 mod scheduler;
 mod store;
+#[cfg(test)]
+mod test_support;
 mod web;
 
 use anyhow::{Context, Result};

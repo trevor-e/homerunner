@@ -20,6 +20,10 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["io-util", "sync"] }
 toml = "0.8"
 
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+
 [profile.release]
 lto = true
 strip = true

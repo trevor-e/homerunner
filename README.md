@@ -1,18 +1,23 @@
 # homerunner
 
-**Use your beefy dev computers to run fast, agent-friendly GitHub Actions.**
+**Use your beefy dev computers to run fast, agent-friendly GitHub Actions
+without burning hosted-runner minutes.**
 
 Homerunner keeps a warm pool of ephemeral self-hosted runners for your private
 repos. Jobs and checks still behave like normal GitHub Actions, but they run on
 hardware you already own, with local caches, searchable logs, and debuggable
-workspaces.
+workspaces. Your personal projects keep running even after your GitHub-hosted
+runner quota is gone.
 
-The useful loop is simple: see which jobs are slow or flaky, inspect them
-locally, fix the bottleneck, and measure the next run. We used that loop to get
-a real CI suite down to about a minute.
+Avoiding quota is the immediate win. The second is a much tighter optimization
+loop: see which jobs are slow or flaky, inspect them locally, fix the bottleneck,
+and measure the next run. We used that loop to get a real CI suite down to about
+a minute.
 
 ## Why homerunner
 
+- **Keep CI running.** Jobs use your machines instead of consuming
+  GitHub-hosted runner minutes—especially useful for personal projects.
 - **Fast feedback.** Warm runners avoid cold starts, queued jobs burst across
   available capacity, and isolated Docker layer caches speed up repeat builds.
 - **Optimization you can see.** The dashboard tracks duration, pass rate,

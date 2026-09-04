@@ -26,6 +26,16 @@ fn tools() -> Value {
             } }
         },
         {
+            "name": "analyze_ci",
+            "description": "Cross-run CI analytics grouped by repository, workflow, and job: pass rate, duration percentiles, memory percentiles, OOMs, regressions, and tuning recommendations.",
+            "inputSchema": { "type": "object", "properties": {
+                "repo": { "type": "string", "description": "optional owner/repo filter" },
+                "workflow": { "type": "string", "description": "optional exact workflow-name filter" },
+                "job_name": { "type": "string", "description": "optional exact job-name filter" },
+                "since": { "type": "string", "description": "lookback such as 24h, 7d, 4w, or all (default 30d)" }
+            } }
+        },
+        {
             "name": "job_logs",
             "description": "Full captured step logs for one job (the runner's Worker diagnostics). job: numeric id, 'latest', or 'latest-failed' (default latest).",
             "inputSchema": { "type": "object", "properties": {
@@ -51,6 +61,18 @@ async fn call_tool(cfg: &Config, dashboard_port: u16, params: &Value) -> String 
             "list_jobs" => {
                 let limit = args["limit"].as_u64().unwrap_or(20) as u32;
                 Ok(serde_json::to_string_pretty(&store.recent_jobs(limit))?)
+            }
+            "analyze_ci" => {
+                let report = agent::analytics(
+                    &store,
+                    &agent::AnalyticsQuery {
+                        repo: args["repo"].as_str().map(str::to_string),
+                        workflow: args["workflow"].as_str().map(str::to_string),
+                        job_name: args["job_name"].as_str().map(str::to_string),
+                        since: args["since"].as_str().map(str::to_string),
+                    },
+                )?;
+                Ok(serde_json::to_string_pretty(&report)?)
             }
             "job_logs" => {
                 let job = agent::resolve_job(&store, args["job"].as_str(), false)?;

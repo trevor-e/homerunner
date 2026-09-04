@@ -80,6 +80,9 @@ pub struct RunnerInfo {
     pub cpu_pct: f64,
     pub mem_bytes: u64,
     pub peak_mem_bytes: u64,
+    pub cpu_sample_sum: f64,
+    pub cpu_sample_count: u64,
+    pub peak_cpu_pct: f64,
 }
 
 impl RunnerInfo {
@@ -100,6 +103,9 @@ impl RunnerInfo {
             cpu_pct: 0.0,
             mem_bytes: 0,
             peak_mem_bytes: 0,
+            cpu_sample_sum: 0.0,
+            cpu_sample_count: 0,
+            peak_cpu_pct: 0.0,
         }
     }
 
@@ -409,7 +415,12 @@ async fn stats_sampler(app: Arc<App>) {
                 if let Some(info) = runners.get_mut(&name) {
                     info.cpu_pct = cpu;
                     info.mem_bytes = mem;
-                    info.peak_mem_bytes = info.peak_mem_bytes.max(mem);
+                    if info.state == RunnerState::Busy {
+                        info.peak_mem_bytes = info.peak_mem_bytes.max(mem);
+                        info.cpu_sample_sum += cpu;
+                        info.cpu_sample_count += 1;
+                        info.peak_cpu_pct = info.peak_cpu_pct.max(cpu);
+                    }
                     changed = true;
                 }
             }
@@ -721,6 +732,9 @@ async fn watch_exit(
     let oom = ran_job && kind.oom_killed(&container_id).await;
     kind.remove(&container_id).await;
     let peak_mb = (info.peak_mem_bytes as f64 / (1024.0 * 1024.0)).round();
+    let cpu_avg_pct =
+        (info.cpu_sample_count > 0).then(|| info.cpu_sample_sum / info.cpu_sample_count as f64);
+    let cpu_peak_pct = (info.cpu_sample_count > 0).then_some(info.peak_cpu_pct);
     if let Some(id) = job_id {
         let store = app.store.lock().unwrap();
         store.set_job_artifacts(
@@ -734,8 +748,8 @@ async fn watch_exit(
         if let Some(conclusion) = info.job["conclusion"].as_str() {
             store.job_concluded(id, conclusion);
         }
-        if peak_mb > 0.0 || oom {
-            store.set_job_resources(id, peak_mb, oom);
+        if peak_mb > 0.0 || oom || cpu_avg_pct.is_some() {
+            store.set_job_resources(id, peak_mb, oom, cpu_avg_pct, cpu_peak_pct);
         }
     } else if ran_job {
         // Enrichment hasn't found the job id yet (short jobs often outrun the
@@ -749,6 +763,8 @@ async fn watch_exit(
                 "kept_image_runtime": kept_image.as_ref().map(|_| kind.name()),
                 "peak_mem_mb": peak_mb,
                 "oom": oom,
+                "cpu_avg_pct": cpu_avg_pct,
+                "cpu_peak_pct": cpu_peak_pct,
             }),
         );
     }
@@ -955,11 +971,14 @@ async fn enrich_job(app: Arc<App>, name: String) {
                         );
                         if outcome["peak_mem_mb"].as_f64().unwrap_or(0.0) > 0.0
                             || outcome["oom"].as_bool() == Some(true)
+                            || outcome["cpu_avg_pct"].as_f64().is_some()
                         {
                             store.set_job_resources(
                                 id,
                                 outcome["peak_mem_mb"].as_f64().unwrap_or(0.0),
                                 outcome["oom"].as_bool() == Some(true),
+                                outcome["cpu_avg_pct"].as_f64(),
+                                outcome["cpu_peak_pct"].as_f64(),
                             );
                         }
                     }

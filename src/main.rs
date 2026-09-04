@@ -50,6 +50,23 @@ enum Cmd {
         #[arg(short = 'n', long, default_value = "20")]
         limit: u32,
     },
+    /// Cross-run duration, reliability, and resource analytics
+    Analytics {
+        /// Restrict to one owner/repo
+        #[arg(long)]
+        repo: Option<String>,
+        /// Restrict to one workflow name
+        #[arg(long)]
+        workflow: Option<String>,
+        /// Restrict to one exact job name
+        #[arg(long)]
+        job_name: Option<String>,
+        /// Lookback window such as 24h, 7d, 4w, or all
+        #[arg(long, default_value = "30d")]
+        since: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Captured step logs for a job (id, 'latest', or 'latest-failed')
     Logs { job: Option<String> },
     /// Failure digest for a job (default: most recent failed job)
@@ -161,6 +178,30 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&jobs)?);
             } else {
                 print!("{}", agent::jobs_table(&jobs));
+            }
+            Ok(())
+        }
+        Cmd::Analytics {
+            repo,
+            workflow,
+            job_name,
+            since,
+            json,
+        } => {
+            let store = store::Store::open_readonly(&cfg.db_path())?;
+            let report = agent::analytics(
+                &store,
+                &agent::AnalyticsQuery {
+                    repo,
+                    workflow,
+                    job_name,
+                    since: Some(since),
+                },
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", agent::analytics_text(&report));
             }
             Ok(())
         }

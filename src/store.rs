@@ -52,6 +52,14 @@ pub struct ArtifactRecord {
     pub kept_image_runtime: Option<String>,
 }
 
+#[derive(Debug, Default)]
+pub struct JobFilter<'a> {
+    pub repo: Option<&'a str>,
+    pub workflow: Option<&'a str>,
+    pub job_name: Option<&'a str>,
+    pub completed_after: Option<f64>,
+}
+
 fn now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -75,6 +83,8 @@ impl Store {
             "ALTER TABLE jobs ADD COLUMN event TEXT",
             "ALTER TABLE jobs ADD COLUMN peak_mem_mb REAL",
             "ALTER TABLE jobs ADD COLUMN oom INTEGER",
+            "ALTER TABLE jobs ADD COLUMN cpu_avg_pct REAL",
+            "ALTER TABLE jobs ADD COLUMN cpu_peak_pct REAL",
         ] {
             let _ = db.execute(stmt, []);
         }
@@ -175,10 +185,24 @@ impl Store {
         );
     }
 
-    pub fn set_job_resources(&self, gh_job_id: i64, peak_mem_mb: f64, oom: bool) {
+    pub fn set_job_resources(
+        &self,
+        gh_job_id: i64,
+        peak_mem_mb: f64,
+        oom: bool,
+        cpu_avg_pct: Option<f64>,
+        cpu_peak_pct: Option<f64>,
+    ) {
         let _ = self.db.execute(
-            "UPDATE jobs SET peak_mem_mb=?2, oom=?3 WHERE gh_job_id=?1",
-            params![gh_job_id, peak_mem_mb, oom as i64],
+            "UPDATE jobs SET peak_mem_mb=?2, oom=?3, cpu_avg_pct=?4, cpu_peak_pct=?5
+             WHERE gh_job_id=?1",
+            params![
+                gh_job_id,
+                peak_mem_mb,
+                oom as i64,
+                cpu_avg_pct,
+                cpu_peak_pct
+            ],
         );
     }
 
@@ -300,7 +324,8 @@ impl Store {
         let sql = format!(
             "SELECT gh_job_id, repo, run_id, workflow, job_name, conclusion, runner_name,
                     html_url, started_at, completed_at, log_dir, kept_image,
-                    head_branch, head_sha, title, event, peak_mem_mb, oom
+                    head_branch, head_sha, title, event, peak_mem_mb, oom,
+                    cpu_avg_pct, cpu_peak_pct
              FROM jobs WHERE {cond} ORDER BY COALESCE(completed_at, started_at) DESC LIMIT 1"
         );
         let mut stmt = self.db.prepare(&sql).ok()?;
@@ -327,6 +352,8 @@ impl Store {
             "event": row.get::<_, Option<String>>(15).ok().flatten(),
             "peak_mem_mb": row.get::<_, Option<f64>>(16).ok().flatten(),
             "oom": row.get::<_, Option<i64>>(17).ok().flatten().map(|v| v != 0),
+            "cpu_avg_pct": row.get::<_, Option<f64>>(18).ok().flatten(),
+            "cpu_peak_pct": row.get::<_, Option<f64>>(19).ok().flatten(),
         })
     }
 
@@ -341,11 +368,43 @@ impl Store {
         self.rows(
             "SELECT gh_job_id, repo, run_id, workflow, job_name, conclusion, runner_name,
                     html_url, started_at, completed_at, log_dir, kept_image,
-                    head_branch, head_sha, title, event, peak_mem_mb, oom
+                    head_branch, head_sha, title, event, peak_mem_mb, oom,
+                    cpu_avg_pct, cpu_peak_pct
              FROM jobs ORDER BY COALESCE(completed_at, started_at) DESC LIMIT ?1",
             limit,
             Self::job_row,
         )
+    }
+
+    /// Completed jobs matching the analytics dimensions, newest first.
+    pub fn filtered_jobs(&self, filter: &JobFilter<'_>) -> Vec<Value> {
+        let Ok(mut stmt) = self.db.prepare(
+            "SELECT gh_job_id, repo, run_id, workflow, job_name, conclusion, runner_name,
+                    html_url, started_at, completed_at, log_dir, kept_image,
+                    head_branch, head_sha, title, event, peak_mem_mb, oom,
+                    cpu_avg_pct, cpu_peak_pct
+             FROM jobs
+             WHERE conclusion IS NOT NULL
+               AND (?1 IS NULL OR repo = ?1)
+               AND (?2 IS NULL OR workflow = ?2)
+               AND (?3 IS NULL OR job_name = ?3)
+               AND (?4 IS NULL OR completed_at >= ?4)
+             ORDER BY completed_at DESC",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map(
+            params![
+                filter.repo,
+                filter.workflow,
+                filter.job_name,
+                filter.completed_after,
+            ],
+            |row| Ok(Self::job_row(row)),
+        ) else {
+            return Vec::new();
+        };
+        rows.filter_map(|row| row.ok()).collect()
     }
 
     pub fn recent_events(&self, limit: u32) -> Vec<Value> {
@@ -402,7 +461,7 @@ mod tests {
         let store = memory_store();
         store.job_started(&job_info(42, "tests"), "owner/repo", "runner-1", Some(10.0));
         store.set_job_artifacts(42, Some("/logs/42"), Some("kept:42"), Some("docker"));
-        store.set_job_resources(42, 384.0, true);
+        store.set_job_resources(42, 384.0, true, Some(72.0), Some(130.0));
         store.job_concluded(42, "failure");
 
         let job = store.job(42).unwrap();
@@ -421,6 +480,8 @@ mod tests {
         );
         assert_eq!(job["peak_mem_mb"], 384.0);
         assert_eq!(job["oom"], true);
+        assert_eq!(job["cpu_avg_pct"], 72.0);
+        assert_eq!(job["cpu_peak_pct"], 130.0);
         assert_eq!(job["head_branch"], "main");
         assert_eq!(job["head_sha"], "sha-42");
         assert_eq!(job["title"], "Change 42");
@@ -436,6 +497,38 @@ mod tests {
         let jobs = store.recent_jobs(1);
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0]["gh_job_id"], 2);
+    }
+
+    #[test]
+    fn filtered_jobs_apply_dimensions_and_time_window() {
+        let store = memory_store();
+        store.job_started(&job_info(1, "tests"), "owner/one", "runner-1", Some(1.0));
+        store.job_concluded(1, "success");
+        store.job_started(&job_info(2, "lint"), "owner/two", "runner-2", Some(2.0));
+        store.job_concluded(2, "failure");
+        store
+            .db
+            .execute("UPDATE jobs SET completed_at=10 WHERE gh_job_id=1", [])
+            .unwrap();
+        store
+            .db
+            .execute("UPDATE jobs SET completed_at=20 WHERE gh_job_id=2", [])
+            .unwrap();
+
+        let jobs = store.filtered_jobs(&JobFilter {
+            repo: Some("owner/two"),
+            workflow: Some("CI"),
+            job_name: Some("lint"),
+            completed_after: Some(15.0),
+        });
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["gh_job_id"], 2);
+        assert!(store
+            .filtered_jobs(&JobFilter {
+                completed_after: Some(21.0),
+                ..JobFilter::default()
+            })
+            .is_empty());
     }
 
     #[test]
@@ -545,6 +638,8 @@ mod tests {
             "event",
             "peak_mem_mb",
             "oom",
+            "cpu_avg_pct",
+            "cpu_peak_pct",
         ] {
             assert!(columns.iter().any(|column| column == expected));
         }

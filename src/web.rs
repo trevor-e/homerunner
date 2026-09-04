@@ -1,8 +1,9 @@
 //! Localhost control center: fleet state, job history, storage, activity, and
 //! searchable views over captured and live runner logs.
 
+use crate::agent;
 use crate::scheduler::App;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, Sse};
 use axum::response::{Html, IntoResponse, Json};
@@ -17,11 +18,13 @@ use tokio_stream::StreamExt;
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 const LOGS_INDEX_HTML: &str = include_str!("../assets/logs_index.html");
 const LOGS_HTML: &str = include_str!("../assets/logs.html");
+const ANALYTICS_HTML: &str = include_str!("../assets/analytics.html");
 
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/logs", get(logs_index))
+        .route("/analytics", get(analytics_page))
         .route("/jobs/{id}/logs", get(log_viewer))
         .route("/runners/{name}/logs", get(log_viewer))
         .route("/api/state", get(state))
@@ -30,6 +33,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/runners/{name}/logs", get(runner_logs))
         .route("/api/jobs/{id}", get(job))
         .route("/api/jobs/{id}/logs", get(job_logs))
+        .route("/api/analytics", get(analytics_api))
         .route("/api/disk", get(disk))
         .with_state(app)
 }
@@ -208,6 +212,10 @@ async fn logs_index() -> Html<&'static str> {
     Html(LOGS_INDEX_HTML)
 }
 
+async fn analytics_page() -> Html<&'static str> {
+    Html(ANALYTICS_HTML)
+}
+
 async fn log_viewer() -> Html<&'static str> {
     Html(LOGS_HTML)
 }
@@ -218,6 +226,20 @@ async fn job(State(app): State<Arc<App>>, Path(id): Path<i64>) -> axum::response
         None => (
             axum::http::StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": format!("no job {id} recorded")})),
+        )
+            .into_response(),
+    }
+}
+
+async fn analytics_api(
+    State(app): State<Arc<App>>,
+    Query(query): Query<agent::AnalyticsQuery>,
+) -> axum::response::Response {
+    match agent::analytics(&app.store.lock().unwrap(), &query) {
+        Ok(report) => Json(report).into_response(),
+        Err(error) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
         )
             .into_response(),
     }
@@ -372,6 +394,8 @@ mod tests {
         assert!(LOGS_INDEX_HTML.contains("<th>Duration</th>"));
         assert!(LOGS_HTML.contains("MAX_LIVE_LINES = 20000"));
         assert!(LOGS_HTML.contains("queueLiveLine"));
+        assert!(ANALYTICS_HTML.contains("Job performance"));
+        assert!(ANALYTICS_HTML.contains("Recommendations"));
     }
 
     #[tokio::test]
@@ -388,6 +412,49 @@ mod tests {
         assert_eq!(body["capacity"], 2);
         assert_eq!(body["max_total_runners"], 2);
         assert_eq!(body["repos"][0]["max"], 3);
+    }
+
+    #[tokio::test]
+    async fn analytics_endpoint_groups_completed_jobs() {
+        let dir = TempDir::new("web-analytics");
+        let app = test_app(dir.path());
+        {
+            let store = app.store.lock().unwrap();
+            let info = serde_json::json!({
+                "job_id": 42,
+                "workflow": "CI",
+                "job_name": "tests",
+            });
+            store.job_started(&info, "owner/project", "runner", Some(1.0));
+            store.job_concluded(42, "success");
+        }
+        let response = router(app)
+            .oneshot(
+                Request::get("/api/analytics?repo=owner%2Fproject&since=all")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["summary"]["runs"], 1);
+        assert_eq!(body["groups"][0]["job_name"], "tests");
+    }
+
+    #[tokio::test]
+    async fn analytics_endpoint_rejects_invalid_windows() {
+        let dir = TempDir::new("web-analytics-invalid");
+        let response = router(test_app(dir.path()))
+            .oneshot(
+                Request::get("/api/analytics?since=yesterday")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -417,6 +484,9 @@ mod tests {
                 cpu_pct: 0.0,
                 mem_bytes: 0,
                 peak_mem_bytes: 0,
+                cpu_sample_sum: 0.0,
+                cpu_sample_count: 0,
+                peak_cpu_pct: 0.0,
             },
         );
         let response = router(app)

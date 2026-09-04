@@ -96,6 +96,7 @@ Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 | `run` | supervisor + dashboard (http://127.0.0.1:4123) in the foreground |
 | `status` | pool summary |
 | `jobs [--json]` | job history, with log/workspace availability |
+| `analytics [--repo …] [--workflow …] [--job-name …] [--since 30d] [--json]` | cross-run pass-rate, duration, CPU/memory, OOM, and regression analysis |
 | `why [job] [--json]` | failure digest: what ran, log excerpt around the error |
 | `logs [job]` | full captured step logs (`latest`, `latest-failed`, or an id) |
 | `exec [job] [-- cmd]` | shell inside a kept failed-job workspace; `-- cmd` runs one command, no TTY (for agents/scripts) |
@@ -111,6 +112,10 @@ marks kept workspaces. A dedicated `/logs` workspace collects captured job
 logs and live runner streams. Its viewer supports plain-text and regex search,
 match navigation, severity filters, line wrapping, JSON detection and
 pretty-printing, copy/download actions, and live streaming from active runners.
+The `/analytics` workspace groups completed runs by repository, workflow, and
+job, surfaces duration and memory percentiles, and calls out OOMs, intermittent
+failures, slow tails, and recent runtime regressions. The same report is
+available to agents through the `analyze_ci` MCP tool.
 
 Cleanup runs at supervisor startup, after completed jobs, and daily. Count
 limits can be combined with optional age and aggregate-size limits for job

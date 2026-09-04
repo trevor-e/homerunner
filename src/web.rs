@@ -424,8 +424,10 @@ mod tests {
         assert!(LOGS_HTML.contains("queueLiveLine"));
         assert!(ANALYTICS_HTML.contains("Job performance"));
         assert!(ANALYTICS_HTML.contains("Recommendations"));
+        assert!(ANALYTICS_HTML.contains("href=\"/search\""));
         assert!(SEARCH_HTML.contains("Global Log Search"));
         assert!(SEARCH_HTML.contains("step:"));
+        assert!(SEARCH_HTML.contains("href=\"/analytics\""));
     }
 
     #[tokio::test]

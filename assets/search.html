@@ -11,7 +11,7 @@
 </head>
 <body>
 <div class="app">
-  <aside><div class="brand"><span class="brandmark"></span>homerunner <small>v0.3</small></div><nav class="side-nav"><a href="/"><span class="icon">⌂</span>Overview</a><a href="/logs"><span class="icon">⌁</span>Logs</a><a class="active" href="/search"><span class="icon">⌕</span>Search</a></nav><div class="side-status"><div class="connection" id="connection"><i></i><span>Ready</span></div></div></aside>
+  <aside><div class="brand"><span class="brandmark"></span>homerunner <small>v0.3</small></div><nav class="side-nav"><a href="/"><span class="icon">⌂</span>Overview</a><a href="/logs"><span class="icon">⌁</span>Logs</a><a href="/analytics"><span class="icon">⌇</span>Analytics</a><a class="active" href="/search"><span class="icon">⌕</span>Search</a></nav><div class="side-status"><div class="connection" id="connection"><i></i><span>Ready</span></div></div></aside>
   <div class="content"><header><div class="header-title">Global Log Search</div><div class="header-meta" id="header-meta">RETAINED JOB LOGS</div></header><main>
     <form class="query" id="form"><input class="field mono" id="q" autofocus placeholder='error branch:main step:"Run tests" -retry' autocomplete="off" spellcheck="false"><select class="field" id="since"><option value="24h">24 hours</option><option value="7d">7 days</option><option value="30d" selected>30 days</option><option value="12w">12 weeks</option><option value="all">All time</option></select><button class="field" type="submit">Search logs</button></form>
     <div class="syntax">Filters: <code>repo:</code> <code>workflow:</code> <code>job_name:</code> <code>branch:</code> <code>step:</code> <code>level:error,warn</code> · quote phrases · prefix exclusions with <code>-</code></div>

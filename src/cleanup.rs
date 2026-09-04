@@ -569,6 +569,7 @@ mod tests {
             auth_source: "env:TEST_TOKEN".into(),
             python_version: "3.13".into(),
             node_version: "24".into(),
+            monitors: vec![],
             repos: vec![RepoConfig {
                 repo: "owner/repo".into(),
                 runtime: RuntimeKind::AppleContainer,

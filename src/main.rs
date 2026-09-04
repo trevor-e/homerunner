@@ -5,6 +5,7 @@ mod github;
 mod log_search;
 mod logging;
 mod mcp;
+mod monitor;
 mod runtime;
 mod scheduler;
 mod store;
@@ -111,6 +112,14 @@ enum Cmd {
         job: Option<String>,
         /// Command to run non-interactively (no TTY needed); default is an
         /// interactive shell
+        #[arg(last = true)]
+        cmd: Vec<String>,
+    },
+    /// Attach to a live runner (name, job id, or 'latest'), or run one command
+    /// in it: `live [target] -- <cmd>...`
+    Live {
+        target: Option<String>,
+        /// Command to run non-interactively; default is an interactive shell
         #[arg(last = true)]
         cmd: Vec<String>,
     },
@@ -313,8 +322,9 @@ async fn main() -> Result<()> {
                     docker.args(["--entrypoint", prog, image]).args(rest);
                 }
             }
-            run_docker_exec(docker)
+            replace_with_command(docker)
         }
+        Cmd::Live { target, cmd } => live_exec(&cfg, target.as_deref(), &cmd).await,
         Cmd::Events { json } => events_cli(cfg, json).await,
         Cmd::Mcp => mcp::serve(cfg).await,
         Cmd::Install | Cmd::Init { .. } => unreachable!(),
@@ -553,6 +563,73 @@ async fn status(cfg: config::Config) -> Result<()> {
     Ok(())
 }
 
+async fn live_exec(cfg: &config::Config, target: Option<&str>, cmd: &[String]) -> Result<()> {
+    let url = format!("http://127.0.0.1:{}/api/state", cfg.dashboard_port);
+    let data: serde_json::Value = reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .context("supervisor not running (dashboard unreachable)")?
+        .error_for_status()?
+        .json()
+        .await?;
+    let runner = resolve_live_runner(&data, target)?;
+    let runtime = runner["runtime"]
+        .as_str()
+        .context("supervisor did not report the runner runtime")?;
+    let container = runner["container_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .context("runner is still starting; try again in a moment")?;
+    let cli = match runtime {
+        "docker" => "docker",
+        "apple-container" => "container",
+        other => anyhow::bail!("unsupported runner runtime: {other}"),
+    };
+    let mut command = StdCommand::new(cli);
+    command.arg("exec");
+    match cmd.split_first() {
+        None => {
+            command.args(["-it", container, "/bin/bash"]);
+        }
+        Some((program, args)) => {
+            command.arg(container).arg(program).args(args);
+        }
+    }
+    replace_with_command(command)
+}
+
+fn resolve_live_runner<'a>(
+    state: &'a serde_json::Value,
+    target: Option<&str>,
+) -> Result<&'a serde_json::Value> {
+    let runners = state["runners"]
+        .as_array()
+        .context("invalid supervisor response: runners missing")?;
+    let selected = match target.filter(|value| *value != "latest") {
+        Some(value) => runners.iter().find(|runner| {
+            runner["name"].as_str() == Some(value)
+                || runner["job"]["job_id"]
+                    .as_i64()
+                    .is_some_and(|id| id.to_string() == value)
+        }),
+        None => runners
+            .iter()
+            .filter(|runner| runner["busy_at"].is_number())
+            .max_by(|left, right| {
+                left["busy_at"]
+                    .as_f64()
+                    .unwrap_or(f64::NEG_INFINITY)
+                    .total_cmp(&right["busy_at"].as_f64().unwrap_or(f64::NEG_INFINITY))
+            }),
+    };
+    selected.with_context(|| match target.filter(|value| *value != "latest") {
+        Some(value) => format!("no live runner or job matches {value:?}"),
+        None => "no busy live runners; pass a listening runner name explicitly".to_string(),
+    })
+}
+
 async fn doctor(cfg: config::Config) -> Result<()> {
     let mut ok = true;
 
@@ -636,16 +713,18 @@ fn platform_defaults(os: &str, arch: &str) -> (&'static str, &'static str) {
 }
 
 #[cfg(unix)]
-fn run_docker_exec(mut docker: StdCommand) -> Result<()> {
+fn replace_with_command(mut command: StdCommand) -> Result<()> {
     use std::os::unix::process::CommandExt;
-    let err = docker.exec();
-    anyhow::bail!("docker run failed: {err}")
+    let err = command.exec();
+    anyhow::bail!("container command failed: {err}")
 }
 
 #[cfg(windows)]
-fn run_docker_exec(mut docker: StdCommand) -> Result<()> {
-    let status = docker.status().context("failed to run docker")?;
-    anyhow::ensure!(status.success(), "docker run exited with {status}");
+fn replace_with_command(mut command: StdCommand) -> Result<()> {
+    let status = command
+        .status()
+        .context("failed to run container command")?;
+    anyhow::ensure!(status.success(), "container command exited with {status}");
     Ok(())
 }
 
@@ -731,5 +810,62 @@ mod platform_tests {
         assert_eq!(platform_defaults("macos", "x86_64"), ("docker", "x64"));
         assert_eq!(platform_defaults("windows", "x86_64"), ("docker", "x64"));
         assert_eq!(platform_defaults("windows", "aarch64"), ("docker", "arm64"));
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::resolve_live_runner;
+    use serde_json::json;
+
+    fn state() -> serde_json::Value {
+        json!({"runners": [
+            {"name": "runner-old", "busy_at": 10.0, "job": {"job_id": 41}},
+            {"name": "runner-new", "busy_at": 20.0, "job": {"job_id": 42}},
+            {"name": "runner-idle", "busy_at": null, "job": {}}
+        ]})
+    }
+
+    #[test]
+    fn resolves_live_target_by_name_or_job_id() {
+        let state = state();
+        assert_eq!(
+            resolve_live_runner(&state, Some("runner-old")).unwrap()["name"],
+            "runner-old"
+        );
+        assert_eq!(
+            resolve_live_runner(&state, Some("42")).unwrap()["name"],
+            "runner-new"
+        );
+    }
+
+    #[test]
+    fn latest_prefers_most_recent_busy_runner() {
+        let state = state();
+        assert_eq!(
+            resolve_live_runner(&state, None).unwrap()["name"],
+            "runner-new"
+        );
+        assert_eq!(
+            resolve_live_runner(&state, Some("latest")).unwrap()["name"],
+            "runner-new"
+        );
+    }
+
+    #[test]
+    fn missing_live_target_is_actionable() {
+        let error = resolve_live_runner(&state(), Some("missing"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no live runner or job"));
+    }
+
+    #[test]
+    fn latest_requires_a_busy_runner() {
+        let state = json!({"runners": [{"name": "idle", "busy_at": null, "job": {}}]});
+        assert!(resolve_live_runner(&state, None)
+            .unwrap_err()
+            .to_string()
+            .contains("no busy live runners"));
     }
 }

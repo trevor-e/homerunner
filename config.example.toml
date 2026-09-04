@@ -42,3 +42,17 @@ max = 3
 repo = "trevor-e/sidequest"    # low-traffic repo: no idle cost, ~30s pickup latency
 reserved = 0
 max = 1
+
+# Optional local guardrails. Scope fields are exact matches and may be omitted.
+# Each rule emits a `monitor_alert` event at most once per job. Retention uses
+# the same bounded workspace budget as keep_failed_workspaces.
+#[[monitors]]
+#name = "slow main CI"
+#repo = "trevor-e/adulting"
+#workflow = "CI"
+#branch = "main"
+#duration_min = 20
+#consecutive_failures = 2
+#oom = true
+#log_pattern = "(?i)deadlock|timed out"
+#retain_workspace = true

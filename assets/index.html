@@ -295,9 +295,13 @@ function renderRunners() {
   $("runner-rows").innerHTML = snapshot.runners.map(r => {
     const job = r.job || {};
     const jobName = job.job_name || job.workflow || "Waiting for a job";
-    return `<tr><td class="mono compact" title="${esc(r.name)}">${esc(r.name.split("-").slice(-2).join("-"))}</td><td class="subtle compact">${esc(r.repo)}</td><td>${status(r.state)}</td><td class="compact ${r.state === "busy" ? "" : "faint"}" title="${esc(jobName)}">${job.html_url ? `<a class="link" href="${esc(safeExternal(job.html_url))}" target="_blank" rel="noopener">${esc(jobName)}</a>` : esc(jobName)}</td><td class="num subtle">${r.cpu_pct == null ? "—" : r.cpu_pct.toFixed(0)+"%"}</td><td class="num subtle">${r.mem_bytes == null ? "—" : bytes(r.mem_bytes)}</td><td class="num subtle">${age(now()-r.created_at)}</td><td><a class="table-action" href="/runners/${encodeURIComponent(r.name)}/logs" title="Open live logs">⌁ Logs</a></td></tr>`;
+    return `<tr><td class="mono compact" title="${esc(r.name)}">${esc(r.name.split("-").slice(-2).join("-"))}</td><td class="subtle compact">${esc(r.repo)}</td><td>${status(r.state)}</td><td class="compact ${r.state === "busy" ? "" : "faint"}" title="${esc(jobName)}">${job.html_url ? `<a class="link" href="${esc(safeExternal(job.html_url))}" target="_blank" rel="noopener">${esc(jobName)}</a>` : esc(jobName)}</td><td class="num subtle">${r.cpu_pct == null ? "—" : r.cpu_pct.toFixed(0)+"%"}</td><td class="num subtle">${r.mem_bytes == null ? "—" : bytes(r.mem_bytes)}</td><td class="num subtle">${age(now()-r.created_at)}</td><td><a class="table-action" href="#" onclick="copyAttach('${esc(r.name)}');return false" title="Copy live shell command">⌁ Attach</a> · <a class="table-action" href="/runners/${encodeURIComponent(r.name)}/logs" title="Open live logs">Logs</a></td></tr>`;
   }).join("");
   $("runner-empty").hidden = snapshot.runners.length > 0;
+}
+async function copyAttach(name) {
+  await navigator.clipboard.writeText(`homerunner live ${name}`);
+  showToast("Live attach command copied");
 }
 
 function renderEvents() {

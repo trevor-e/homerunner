@@ -10,7 +10,7 @@ use crate::github::GitHub;
 use crate::store::Store;
 use regex::Regex;
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -83,6 +83,10 @@ pub struct RunnerInfo {
     pub cpu_sample_sum: f64,
     pub cpu_sample_count: u64,
     pub peak_cpu_pct: f64,
+    /// Monitor names already emitted for this job, so each rule alerts once.
+    pub monitor_alerts: HashSet<String>,
+    /// A matched monitor can preserve the workspace even for a successful job.
+    pub retain_workspace: bool,
 }
 
 impl RunnerInfo {
@@ -106,6 +110,8 @@ impl RunnerInfo {
             cpu_sample_sum: 0.0,
             cpu_sample_count: 0,
             peak_cpu_pct: 0.0,
+            monitor_alerts: HashSet::new(),
+            retain_workspace: false,
         }
     }
 
@@ -276,6 +282,8 @@ impl App {
                 .map(|(name, r)| json!({
                     "name": name,
                     "repo": r.repo_cfg.repo,
+                    "runtime": r.repo_cfg.runtime.name(),
+                    "container_id": r.container_id,
                     "state": r.state.name(),
                     "created_at": r.created_at,
                     "busy_at": r.busy_at,
@@ -677,10 +685,11 @@ async fn watch_exit(
     let job_id = info.job["job_id"].as_i64();
 
     // Post-mortem capture, before the container is destroyed: the runner's
-    // _diag logs (verbose per-step output) always; the whole workspace as a
-    // kept image when the job failed.
+    // _diag logs (verbose per-step output) always; the whole workspace when
+    // the job failed or a matching monitor requested retention.
     let mut log_dir: Option<String> = None;
     let mut kept_image: Option<String> = None;
+    let oom = ran_job && kind.oom_killed(&container_id).await;
     if ran_job {
         let key = job_id
             .map(|i| i.to_string())
@@ -699,14 +708,68 @@ async fn watch_exit(
         {
             log_dir = Some(dir.to_string_lossy().into_owned());
         }
+        let worker_log = crate::agent::read_worker_logs(&json!({"log_dir": log_dir})).ok();
+        let failures = if info.job["conclusion"].as_str() == Some("failure") {
+            app.store.lock().unwrap().consecutive_failures(
+                &repo_cfg.repo,
+                info.job["workflow"].as_str(),
+                info.job["job_name"].as_str(),
+                info.job["head_branch"].as_str(),
+                job_id,
+            )
+        } else {
+            0
+        };
+        let mut retain_for_monitor = info.retain_workspace;
+        let mut monitor_alerts = Vec::new();
+        for monitor in &app.config.monitors {
+            if info.monitor_alerts.contains(&monitor.name)
+                || !crate::monitor::matches_scope(monitor, &repo_cfg.repo, &info.job)
+            {
+                continue;
+            }
+            let reasons = crate::monitor::completion_reasons(
+                monitor,
+                info.job["conclusion"].as_str(),
+                oom,
+                worker_log.as_deref(),
+                failures,
+            );
+            if !reasons.is_empty() {
+                retain_for_monitor |= monitor.retain_workspace;
+                monitor_alerts.push((monitor.name.clone(), reasons));
+            }
+        }
+        for (monitor, reasons) in &monitor_alerts {
+            app.log(
+                "warn",
+                "monitor",
+                &format!("{monitor} matched {name}: {}", reasons.join(", ")),
+            );
+            app.emit(
+                "monitor_alert",
+                json!({
+                    "monitor": monitor,
+                    "runner": name,
+                    "repo": repo_cfg.repo,
+                    "job_id": job_id,
+                    "reasons": reasons,
+                    "retain_workspace": retain_for_monitor,
+                }),
+            );
+        }
         let meta = json!({
-            "job": info.job, "runner": name, "repo": repo_cfg.repo, "exit_code": code,
+            "job": info.job,
+            "runner": name,
+            "repo": repo_cfg.repo,
+            "exit_code": code,
+            "oom": oom,
+            "monitor_alerts": monitor_alerts,
         });
         let _ = std::fs::write(dir.join("meta.json"), meta.to_string());
 
-        if info.job["conclusion"].as_str() == Some("failure")
-            && app.config.keep_failed_workspaces > 0
-        {
+        let failed = info.job["conclusion"].as_str() == Some("failure");
+        if (failed || retain_for_monitor) && app.config.keep_failed_workspaces > 0 {
             let tag = format!("homerunner-kept:{key}");
             match kind.commit_image(&container_id, &tag).await {
                 Ok(()) => {
@@ -714,7 +777,7 @@ async fn watch_exit(
                     app.log(
                         "info",
                         "keep",
-                        &format!("kept failed workspace as {tag} (homerunner exec {key})"),
+                        &format!("kept workspace as {tag} (homerunner exec {key})"),
                     );
                     app.emit(
                         "workspace_kept",
@@ -729,7 +792,6 @@ async fn watch_exit(
             }
         }
     }
-    let oom = ran_job && kind.oom_killed(&container_id).await;
     kind.remove(&container_id).await;
     let peak_mb = (info.peak_mem_bytes as f64 / (1024.0 * 1024.0)).round();
     let cpu_avg_pct =
@@ -1008,6 +1070,59 @@ async fn watchdog(app: Arc<App>) {
     loop {
         tokio::time::sleep(Duration::from_secs(60)).await;
         let ts = now();
+        let monitors = app.config.monitors.clone();
+        let mut monitor_alerts = Vec::new();
+        {
+            let mut runners = app.runners.lock().unwrap();
+            for (name, runner) in runners
+                .iter_mut()
+                .filter(|(_, runner)| runner.state == RunnerState::Busy && runner.busy_at.is_some())
+            {
+                for monitor in &monitors {
+                    let Some(duration_min) = monitor.duration_min else {
+                        continue;
+                    };
+                    if runner.monitor_alerts.contains(&monitor.name)
+                        || !crate::monitor::matches_scope(
+                            monitor,
+                            &runner.repo_cfg.repo,
+                            &runner.job,
+                        )
+                        || ts - runner.busy_at.unwrap_or(ts) < (duration_min * 60) as f64
+                    {
+                        continue;
+                    }
+                    runner.monitor_alerts.insert(monitor.name.clone());
+                    runner.retain_workspace |= monitor.retain_workspace;
+                    monitor_alerts.push((
+                        monitor.name.clone(),
+                        name.clone(),
+                        runner.repo_cfg.repo.clone(),
+                        runner.job["job_id"].clone(),
+                        duration_min,
+                        monitor.retain_workspace,
+                    ));
+                }
+            }
+        }
+        for (monitor, runner, repo, job_id, duration_min, retain_workspace) in monitor_alerts {
+            app.log(
+                "warn",
+                "monitor",
+                &format!("{monitor} matched {runner}: running longer than {duration_min}m"),
+            );
+            app.emit(
+                "monitor_alert",
+                json!({
+                    "monitor": monitor,
+                    "runner": runner,
+                    "repo": repo,
+                    "job_id": job_id,
+                    "reasons": [format!("running longer than {duration_min}m")],
+                    "retain_workspace": retain_workspace,
+                }),
+            );
+        }
         let stuck: Vec<(String, crate::config::RuntimeKind, String)> = app
             .runners
             .lock()

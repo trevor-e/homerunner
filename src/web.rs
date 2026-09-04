@@ -384,6 +384,7 @@ mod tests {
                 python_version: "3.13".into(),
                 node_version: "24".into(),
                 repos: vec![repo()],
+                monitors: vec![],
             },
             GitHub::new("env:HOMERUNNER_TEST_TOKEN"),
             Store::open(Path::new(":memory:")).unwrap(),
@@ -510,6 +511,8 @@ mod tests {
                 cpu_sample_sum: 0.0,
                 cpu_sample_count: 0,
                 peak_cpu_pct: 0.0,
+                monitor_alerts: std::collections::HashSet::new(),
+                retain_workspace: false,
             },
         );
         let response = router(app)

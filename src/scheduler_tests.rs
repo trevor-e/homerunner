@@ -37,6 +37,7 @@ fn app(repos: Vec<RepoConfig>, max_total_runners: u32) -> Arc<App> {
         python_version: "3.13".into(),
         node_version: "24".into(),
         repos,
+        monitors: vec![],
     };
     App::new(
         config,

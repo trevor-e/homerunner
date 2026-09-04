@@ -81,6 +81,26 @@ struct RawConfig {
     defaults: RepoDefaults,
     #[serde(default)]
     repos: Vec<RepoEntry>,
+    #[serde(default)]
+    monitors: Vec<MonitorConfig>,
+}
+
+/// A local CI guardrail. Scope fields are exact matches; `log_pattern` is a
+/// regular expression evaluated against the captured worker log.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MonitorConfig {
+    pub name: String,
+    pub repo: Option<String>,
+    pub workflow: Option<String>,
+    pub job_name: Option<String>,
+    pub branch: Option<String>,
+    pub duration_min: Option<u64>,
+    pub consecutive_failures: Option<u32>,
+    #[serde(default)]
+    pub oom: bool,
+    pub log_pattern: Option<String>,
+    #[serde(default)]
+    pub retain_workspace: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +153,7 @@ pub struct Config {
     pub python_version: String,
     pub node_version: String,
     pub repos: Vec<RepoConfig>,
+    pub monitors: Vec<MonitorConfig>,
 }
 
 impl Config {
@@ -210,6 +231,31 @@ pub fn load(path: &Path) -> Result<Config> {
     if raw.supervisor.service_log_max_mb == Some(0) {
         bail!("service_log_max_mb must be at least 1");
     }
+    for monitor in &raw.monitors {
+        if monitor.name.trim().is_empty() {
+            bail!("[[monitors]] name must not be empty");
+        }
+        if monitor.duration_min == Some(0) {
+            bail!("monitor {}: duration_min must be at least 1", monitor.name);
+        }
+        if monitor.consecutive_failures == Some(0) {
+            bail!(
+                "monitor {}: consecutive_failures must be at least 1",
+                monitor.name
+            );
+        }
+        if let Some(pattern) = &monitor.log_pattern {
+            regex::Regex::new(pattern)
+                .with_context(|| format!("monitor {}: invalid log_pattern", monitor.name))?;
+        }
+        if monitor.duration_min.is_none()
+            && monitor.consecutive_failures.is_none()
+            && !monitor.oom
+            && monitor.log_pattern.is_none()
+        {
+            bail!("monitor {} has no trigger", monitor.name);
+        }
+    }
 
     let data_dir = expand_tilde(
         raw.supervisor
@@ -249,6 +295,7 @@ pub fn load(path: &Path) -> Result<Config> {
         python_version: raw.toolchains.python.unwrap_or_else(|| "3.13.1".into()),
         node_version: raw.toolchains.node.unwrap_or_else(|| "24.14.0".into()),
         repos,
+        monitors: raw.monitors,
     })
 }
 
@@ -420,6 +467,49 @@ image = "runner:custom"
             .unwrap_err()
             .to_string()
             .contains("no [[repos]] configured"));
+    }
+
+    #[test]
+    fn loads_and_validates_monitors() {
+        let dir = TempDir::new("config-monitors");
+        let data_dir = dir.path().join("data");
+        let path = write_config(
+            &dir,
+            &format!(
+                r#"
+[supervisor]
+data_dir = "{}"
+
+[[repos]]
+repo = "owner/project"
+
+[[monitors]]
+name = "slow or stuck"
+repo = "owner/project"
+workflow = "CI"
+duration_min = 15
+consecutive_failures = 2
+oom = true
+log_pattern = "(?i)deadlock"
+retain_workspace = true
+"#,
+                toml_path(&data_dir)
+            ),
+        );
+
+        let config = load(&path).unwrap();
+        assert_eq!(config.monitors.len(), 1);
+        assert_eq!(config.monitors[0].duration_min, Some(15));
+        assert!(config.monitors[0].retain_workspace);
+
+        let invalid = write_config(
+            &dir,
+            "[[repos]]\nrepo = \"owner/project\"\n[[monitors]]\nname = \"bad\"\nlog_pattern = \"[\"\n",
+        );
+        assert!(load(&invalid)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid log_pattern"));
     }
 
     #[test]

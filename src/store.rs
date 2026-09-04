@@ -206,6 +206,47 @@ impl Store {
         );
     }
 
+    pub fn consecutive_failures(
+        &self,
+        repo: &str,
+        workflow: Option<&str>,
+        job_name: Option<&str>,
+        branch: Option<&str>,
+        current_job_id: Option<i64>,
+    ) -> u32 {
+        let Ok(mut stmt) = self.db.prepare(
+            "SELECT gh_job_id, conclusion FROM jobs
+             WHERE repo=?1
+               AND (?2 IS NULL OR workflow=?2)
+               AND (?3 IS NULL OR job_name=?3)
+               AND (?4 IS NULL OR head_branch=?4)
+               AND conclusion IS NOT NULL
+             ORDER BY COALESCE(completed_at, started_at) DESC LIMIT 100",
+        ) else {
+            return 0;
+        };
+        let Ok(rows) = stmt.query_map(params![repo, workflow, job_name, branch], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+        }) else {
+            return 0;
+        };
+        let history: Vec<_> = rows.filter_map(|row| row.ok()).collect();
+        // The caller invokes this while the current job is known to have
+        // failed, but its conclusion may not have reached SQLite yet.
+        let mut count = 1;
+        for (id, conclusion) in history {
+            if current_job_id == Some(id) {
+                continue;
+            }
+            match conclusion.as_deref() {
+                Some("failure") => count += 1,
+                Some(_) => break,
+                None => {}
+            }
+        }
+        count
+    }
+
     pub fn clear_log_dir(&self, log_dir: &str) -> Result<usize> {
         Ok(self.db.execute(
             "UPDATE jobs SET log_dir=NULL WHERE log_dir=?1",
@@ -584,6 +625,38 @@ mod tests {
 
         assert_eq!(store.latest_job(false).unwrap()["gh_job_id"], 2);
         assert_eq!(store.latest_job(true).unwrap()["gh_job_id"], 1);
+    }
+
+    #[test]
+    fn consecutive_failures_includes_unsettled_current_job() {
+        let store = memory_store();
+        store.job_started(&job_info(1, "tests"), "owner/repo", "runner-1", Some(10.0));
+        store.job_concluded(1, "failure");
+        store.job_started(&job_info(2, "tests"), "owner/repo", "runner-2", Some(20.0));
+
+        assert_eq!(
+            store.consecutive_failures(
+                "owner/repo",
+                Some("CI"),
+                Some("tests"),
+                Some("main"),
+                Some(2),
+            ),
+            2
+        );
+
+        store.job_concluded(2, "success");
+        store.job_started(&job_info(3, "tests"), "owner/repo", "runner-3", Some(30.0));
+        assert_eq!(
+            store.consecutive_failures(
+                "owner/repo",
+                Some("CI"),
+                Some("tests"),
+                Some("main"),
+                Some(3),
+            ),
+            1
+        );
     }
 
     #[test]

@@ -102,6 +102,7 @@ Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 | `search <query> [--since 30d] [--json]` | search retained logs across jobs with repo/workflow/branch/step/severity filters |
 | `steps [job] [--json]` | detected step line ranges and error/warning counts |
 | `exec [job] [-- cmd]` | shell inside a kept failed-job workspace; `-- cmd` runs one command, no TTY (for agents/scripts) |
+| `live [runner-or-job] [-- cmd]` | attach to a live runner (default: latest busy runner), or run one command without a TTY |
 | `gc [--dry-run] [--json]` | reconcile retained artifacts and enforce cleanup policy |
 | `events [--json]` | follow the live event stream (`job_started`, `job_result`, `burst`, …; NDJSON with `--json`) |
 | `mcp` | MCP server over stdio: `claude mcp add homerunner -- homerunner mcp` |
@@ -130,6 +131,12 @@ the filesystem or container runtime confirms success; `homerunner gc
 kept for `job_history_days` (default 365) after its artifacts are gone, and
 events are kept for `event_history_days` (default 7). Installed-service logs
 rotate at `service_log_max_mb` with `service_log_backups` retained files.
+
+Optional `[[monitors]]` rules emit structured `monitor_alert` events for jobs
+that exceed a duration, fail repeatedly, are OOM-killed, or match a log regex.
+Rules can be scoped by repository, workflow, job name, and branch. Set
+`retain_workspace = true` to preserve a matched Docker workspace within the
+same bounded `keep_failed_workspaces` budget; see `config.example.toml`.
 
 ## Notes
 

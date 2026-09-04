@@ -222,6 +222,10 @@ mod tests {
         path
     }
 
+    fn toml_path(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
     #[test]
     fn loads_defaults_and_repo_overrides() {
         let dir = TempDir::new("config-merge");
@@ -265,7 +269,7 @@ runtime = "docker"
 reserved = 2
 image = "runner:custom"
 "#,
-                data_dir.display()
+                toml_path(&data_dir)
             ),
         );
 
@@ -306,7 +310,7 @@ image = "runner:custom"
             &dir,
             &format!(
                 "[supervisor]\ndata_dir = \"{}\"\n[[repos]]\nrepo = \"owner/project\"\n",
-                data_dir.display()
+                toml_path(&data_dir)
             ),
         );
 
@@ -367,5 +371,13 @@ image = "runner:custom"
             registry_mirror: None,
         };
         assert_eq!(repo.slug(), "owner-project");
+    }
+
+    #[test]
+    fn test_config_paths_are_valid_toml_on_windows() {
+        assert_eq!(
+            toml_path(Path::new(r"C:\Users\runner\homerunner")),
+            "C:/Users/runner/homerunner"
+        );
     }
 }

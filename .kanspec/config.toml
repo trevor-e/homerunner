@@ -1,0 +1,49 @@
+# kanspec config. Every key below is the default; delete any line to keep it.
+# Docs: `kanspec instructions config`
+
+main             = "origin/main"      # the branch merge detection resolves against
+id_width         = 4                 # hex digits in a minted id; widens on collision
+sync             = "batch"           # batch | commit   (branch = team mode, v0.4)
+port             = 5757              # `kanspec up` binds 127.0.0.1:<port>
+branch_prefix    = "ks/"             # `start` creates <prefix><id>-<slug>
+worktree         = false                # `start` makes a worktree without being asked?
+                                 # off by default: worktrees suit some repos badly
+                                 # (untracked .env, build output, node_modules).
+                                 # Override either way with --worktree / --no-worktree.
+worktree_dir     = "../kanspec-wt"  # where those worktrees go
+lock_timeout_secs = 5                # how long a verb waits for the advisory lock
+
+[paths]
+# The generated projections. `init` refuses to claim a path that already exists
+# un-generated, so plain FEATURES.md is yours to take if it is free.
+features     = "KANSPEC-FEATURES.md"
+architecture = "KANSPEC-ARCHITECTURE.md"
+
+[windows]
+stall_secs            = 7200     # doing, no commit or update -> STALLED
+review_dwell_secs     = 604800   # in review this long -> a WATCHING line
+in_main_dwell_secs    = 86400    # landed but not closed
+settling_dwell_secs   = 259200   # proposal's last ticket landed, not closed
+discovered_dwell_secs = 604800   # discovered_in ticket sitting untriaged
+stale_merges          = 3        # merges touching a spec's globs before it is stale
+fetch_max_age_secs    = 300      # older than this and a scan says so on the badge
+
+[git]
+fetch = true            # `git fetch origin` before a scan
+gh    = "auto"        # auto | always | never — rung 2 of the merge ladder
+
+[ci]
+provider = "auto"        # auto | homerunner | gh | none
+
+[ci.homerunner]
+bin = "~/dev/homerunner/target/release/homerunner"
+db  = "~/.local/share/homerunner/homerunner.db"
+api = "http://127.0.0.1:4123"
+
+[hooks]
+landcheck = false         # the Stop hook. Opt-in; v0.2.
+
+[prime]
+spec_budget_tokens = 2000   # spec rules `prime` injects, in tokens; 0 = no budget.
+                                 # Matched specs show in rank order until it is spent;
+                                 # the rest are named. `rules --full` lifts it.

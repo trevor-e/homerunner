@@ -798,7 +798,7 @@ mod tests {
     #[test]
     fn log_cleanup_repairs_then_removes_journal_reference() {
         let dir = TempDir::new("cleanup-reconcile");
-        let jobs = dir.path().join("jobs/42");
+        let jobs = dir.path().join("jobs").join("42");
         std::fs::create_dir_all(&jobs).unwrap();
         std::fs::write(jobs.join("meta.json"), "{}").unwrap();
         let store = Mutex::new(Store::open(Path::new(":memory:")).unwrap());
@@ -826,7 +826,7 @@ mod tests {
     #[test]
     fn dry_run_does_not_repair_or_remove_logs() {
         let dir = TempDir::new("cleanup-dry-run");
-        let jobs = dir.path().join("jobs/43");
+        let jobs = dir.path().join("jobs").join("43");
         std::fs::create_dir_all(&jobs).unwrap();
         let store = Mutex::new(Store::open(Path::new(":memory:")).unwrap());
         record_job(&store.lock().unwrap(), 43);

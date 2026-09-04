@@ -407,7 +407,7 @@ mod tests {
     fn directory_stats_count_top_level_jobs_and_nested_bytes() {
         let dir = TempDir::new("dir-stats");
         let first = dir.path().join("job-1");
-        let nested = dir.path().join("job-2/diag");
+        let nested = dir.path().join("job-2").join("diag");
         std::fs::create_dir_all(&first).unwrap();
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(first.join("one.log"), b"123").unwrap();
@@ -579,7 +579,7 @@ mod tests {
     async fn captured_log_endpoint_returns_sorted_worker_logs() {
         let dir = TempDir::new("web-job-logs");
         let app = test_app(dir.path());
-        let capture = dir.path().join("jobs/42");
+        let capture = dir.path().join("jobs").join("42");
         let diag = capture.join("diag");
         std::fs::create_dir_all(&diag).unwrap();
         std::fs::write(diag.join("Worker_002.log"), "second\n").unwrap();
@@ -616,7 +616,7 @@ mod tests {
     async fn global_search_endpoint_returns_step_context() {
         let dir = TempDir::new("web-log-search");
         let app = test_app(dir.path());
-        let capture = dir.path().join("jobs/77");
+        let capture = dir.path().join("jobs").join("77");
         let diag = capture.join("diag");
         std::fs::create_dir_all(&diag).unwrap();
         std::fs::write(
@@ -656,7 +656,7 @@ mod tests {
     async fn search_suggestions_expose_retained_job_metadata_and_steps() {
         let dir = TempDir::new("web-search-suggestions");
         let app = test_app(dir.path());
-        let capture = dir.path().join("jobs/88");
+        let capture = dir.path().join("jobs").join("88");
         let diag = capture.join("diag");
         std::fs::create_dir_all(&diag).unwrap();
         std::fs::write(

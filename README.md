@@ -1,31 +1,32 @@
 # homerunner
 
-Self-hosted GitHub Actions runners on a Mac. Keeps a small pool of ephemeral
-runners per repo: each one takes a single job in its own container/VM, exits,
-and gets replaced. Self-hosted minutes are free, and logs/checks show up in
-GitHub like normal.
+**Use your beefy dev computers to run fast, agent-friendly GitHub Actions.**
 
-Three things make it more than a quota workaround:
+Homerunner keeps a warm pool of ephemeral self-hosted runners for your private
+repos. Jobs and checks still behave like normal GitHub Actions, but they run on
+hardware you already own, with local caches, searchable logs, and debuggable
+workspaces.
 
-- **CI state stays on your machine.** Step logs are captured from every job,
-  and a failed job keeps its *entire workspace* — checkout, build state,
-  tmpdirs — as a local image. `homerunner exec` opens a shell in the exact
-  failed state, so a flaky test gets rerun in place instead of reasoned about
-  from a log viewer. Hosted CI throws all of this away.
-- **Built for agents.** `homerunner why` prints a failure digest (what ran,
-  the log excerpt around the error, whether the workspace was kept), every
-  query takes `--json`, and `homerunner mcp` serves the same queries as MCP
-  tools — so a coding agent can debug CI without touching GitHub's API.
-  [`skills/homerunner`](skills/homerunner/SKILL.md) packages the debugging
-  workflow as an agent skill: symlink it into `~/.claude/skills/`, or
-  `npx skills add trevor-e/homerunner --skill homerunner`.
-- **VM-per-job isolation** via [apple/container](https://github.com/apple/container)
-  on Apple Silicon (not yet verified on hardware:
-  [docs/arm64-verification.md](docs/arm64-verification.md)), with a
-  `--privileged` Docker driver everywhere else.
+The useful loop is simple: see which jobs are slow or flaky, inspect them
+locally, fix the bottleneck, and measure the next run. We used that loop to get
+a real CI suite down to about a minute.
 
-Each runner gets a private dockerd, so `services:` blocks behave exactly like
-GitHub-hosted runners.
+## Why homerunner
+
+- **Fast feedback.** Warm runners avoid cold starts, queued jobs burst across
+  available capacity, and isolated Docker layer caches speed up repeat builds.
+- **Optimization you can see.** The dashboard tracks duration, pass rate,
+  memory, OOMs, and regressions across runs. Global search makes retained logs
+  easy to explore.
+- **Debug the real failure.** Every job keeps its step logs. Failed jobs can
+  keep their entire workspace, so `homerunner exec` reopens the exact checkout,
+  build state, and temp files that failed.
+- **Built for agents.** CLI commands support JSON, `homerunner mcp` exposes the
+  same data as tools, and [`skills/homerunner`](skills/homerunner/SKILL.md)
+  packages the debugging workflow for coding agents.
+- **Fresh job isolation.** Each runner handles one job in its own container or
+  VM, gets replaced afterward, and has a private dockerd so `services:` works
+  like it does on GitHub-hosted runners.
 
 > [!WARNING]
 > Private repos only. On a public repo, fork PRs run arbitrary code on your
@@ -109,45 +110,22 @@ Then set `runs-on: [self-hosted, linux, x64]` in your workflows.
 | `doctor` | check token, runtime, image, repo access |
 | `init` / `install` / `build-image` | one-time setup, launchd agent, image rebuild |
 
-Failed jobs keep their workspace as a local image (`keep_failed_workspaces`,
-default 2, oldest GC'd). The dashboard links each job's captured logs and
-marks kept workspaces. A dedicated `/logs` workspace collects captured job
-logs and live runner streams. Its viewer supports plain-text and regex search,
-match navigation, severity filters, line wrapping, JSON detection and
-pretty-printing, copy/download actions, and live streaming from active runners.
-The `/analytics` workspace groups completed runs by repository, workflow, and
-job, surfaces duration and memory percentiles, and calls out OOMs, intermittent
-failures, slow tails, and recent runtime regressions. The same report is
-available to agents through the `analyze_ci` MCP tool.
-The `/search` workspace searches retained log bodies globally and returns each
-matching line with its repository, workflow, job, branch, severity, and detected
-step. The same index is available through `search_logs` and `job_steps` MCP tools.
+## Operations
 
-Cleanup runs at supervisor startup, after completed jobs, and daily. Count
-limits can be combined with optional age and aggregate-size limits for job
-logs and retained workspaces. Deletions clear journal references only after
-the filesystem or container runtime confirms success; `homerunner gc
---dry-run` previews reconciliation and pruning. Completed job metadata is
-kept for `job_history_days` (default 365) after its artifacts are gone, and
-events are kept for `event_history_days` (default 7). Installed-service logs
-rotate at `service_log_max_mb` with `service_log_backups` retained files.
+- The dashboard at [http://127.0.0.1:4123](http://127.0.0.1:4123) shows live
+  capacity, runners, job history, analytics, retained logs, and global search.
+- Failed Docker jobs can keep their workspace as a local image
+  (`keep_failed_workspaces`, default 2). `homerunner exec` opens it and
+  `homerunner gc --dry-run` previews cleanup.
+- Optional `[[monitors]]` rules flag slow, repeatedly failing, OOM-killed, or
+  regex-matching jobs. Rules can retain the matched workspace; see
+  `config.example.toml`.
+- `docker_layer_cache = true` keeps build layers in an isolated volume per repo
+  concurrency slot. Containers and networks are still cleared between jobs.
+  Only enable it where jobs are allowed to reuse one another's build layers.
 
-Optional `[[monitors]]` rules emit structured `monitor_alert` events for jobs
-that exceed a duration, fail repeatedly, are OOM-killed, or match a log regex.
-Rules can be scoped by repository, workflow, job name, and branch. Set
-`retain_workspace = true` to preserve a matched Docker workspace within the
-same bounded `keep_failed_workspaces` budget; see `config.example.toml`.
-
-Set `docker_layer_cache = true` for a Docker-backed repo to persist inner
-Docker layers between ephemeral jobs. Homerunner assigns one named volume per
-repo concurrency slot, so live daemons never share `/var/lib/docker` and
-different repositories never share cache data. Containers, networks, and
-inner Docker volumes are cleared before the next job; only images and build
-layers carry over. `homerunner gc` removes cache
-slots that no longer exist in config and caches unused for
-`docker_cache_max_age_days` (default 30; `0` disables age pruning). Because
-Docker layers can contain files copied during builds, only enable this for
-repositories that are allowed to reuse one another's build layers.
+Cleanup runs at startup, after completed jobs, and daily. Log, workspace,
+metadata, event, cache, and service-log retention are all bounded in config.
 
 ## Notes
 
@@ -173,12 +151,7 @@ cargo clippy --all-targets -- -D warnings
 
 ## Related: local-ci
 
-[local-ci](https://github.com/redwoodjs/local-ci) is the other half of this
-idea, and a very good one: it runs the same official runner binary against a
-locally emulated GitHub API, so workflows execute on your dirty working tree
-*before* you push — no registration, no commits, no status checks. Use it
-when you can't touch a repo's workflows (day job) and want a pre-flight
-loop; use homerunner when you control the repo and want the *real* post-push
-CI — registered runners, status checks, the queue — running on your own
-hardware. They compose: local-ci makes the push green, homerunner makes the
-gatekeeping run fast.
+[local-ci](https://github.com/redwoodjs/local-ci) runs workflows against your
+dirty working tree before you push. Homerunner runs the real post-push GitHub
+checks on your hardware. They compose well: local-ci is the preflight;
+homerunner is the fast gatekeeper.
